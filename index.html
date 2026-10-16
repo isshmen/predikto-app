@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PREDIKTO - Decentralized Prediction & Social Betting Protocol</title>
+    <title>PREDIKTO - Social Betting & Live Predictions Protocol</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
@@ -11,10 +11,10 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc, getDocs, query, where, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc, getDocs, query, where, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         // ==========================================
-        // ÎNLOCUIEȘTE ACESTE DATE CU CONFIGURAREA TA DIN FIREBASE CONSOLE
+        // FIREBASE CONFIGURATION
         // ==========================================
         const firebaseConfig = {
             apiKey: "AIzaSyCx5j2wkdKJsiyw4XQ5nXQFerE6Dyu_Vkc",
@@ -30,9 +30,9 @@
         const db = getFirestore(app);
         const googleProvider = new GoogleAuthProvider();
 
-        // Global State
         window.currentUser = null;
         window.userData = null;
+        window.currentBtcPrice = 0;
 
         // Auth State Listener
         onAuthStateChanged(auth, async (user) => {
@@ -41,6 +41,7 @@
                 await handleUserDoc(user);
                 updateAuthUI(true);
                 loadUserPredictions();
+                loadLeaderboard();
             } else {
                 window.currentUser = null;
                 window.userData = null;
@@ -48,17 +49,13 @@
             }
         });
 
-        // Handle User Document & Welcome 100 Tokens + Referral
         async function handleUserDoc(user) {
             const userRef = doc(db, "users", user.uid);
             const userSnap = await getDoc(userRef);
-
-            // Check URL for referral parameter (e.g. ?ref=UID)
             const urlParams = new URLSearchParams(window.location.search);
             const refBy = urlParams.get('ref') || null;
 
             if (!userSnap.exists()) {
-                // New user: grant 100 Predikto tokens
                 window.userData = {
                     uid: user.uid,
                     email: user.email,
@@ -79,14 +76,14 @@
             const container = document.getElementById('auth-container');
             if (isLoggedIn) {
                 container.innerHTML = `
-                    <div class="flex items-center space-x-3">
-                        <span class="text-xs text-emerald-400 font-semibold hidden sm:inline">${window.currentUser.displayName}</span>
-                        <button onclick="logout()" class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-2 rounded-xl text-xs font-semibold transition">Logout</button>
+                    <div class="flex items-center space-x-3 bg-gray-900 border border-gray-800 px-4 py-2 rounded-2xl shadow-inner">
+                        <span class="text-xs text-emerald-400 font-bold hidden sm:inline">${window.currentUser.displayName}</span>
+                        <button onclick="logout()" class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded-xl text-xs font-semibold transition">Logout</button>
                     </div>
                 `;
             } else {
                 container.innerHTML = `
-                    <button onclick="loginGoogle()" class="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 text-white font-semibold px-4 py-2 rounded-xl text-sm shadow-lg shadow-emerald-500/20 transition flex items-center space-x-2">
+                    <button onclick="loginGoogle()" class="bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-darker font-extrabold px-5 py-2.5 rounded-2xl text-sm shadow-lg shadow-emerald-500/20 transition flex items-center space-x-2">
                         <i class="fa-brands fa-google"></i>
                         <span>Google Sign In</span>
                     </button>
@@ -108,52 +105,68 @@
             router('home');
         }
 
-        // Place Prediction
-        window.placePrediction = async function() {
+        // Multi-Prediction System Handler
+        window.placeMultiplePredictions = async function() {
             if (!window.currentUser) {
-                alert("Please sign in first to place a prediction!");
+                alert("Please sign in first to place predictions!");
                 return;
             }
 
-            const priceInput = parseFloat(document.getElementById('pred-price').value);
-            const stakeCost = 10;
+            const inputs = document.querySelectorAll('.prediction-input');
+            let predictionsToSubmit = [];
+            
+            inputs.forEach(input => {
+                const val = parseFloat(input.value);
+                if (!isNaN(val) && val > 0) {
+                    predictionsToSubmit.push(val);
+                }
+            });
 
-            if (window.userData.balance < stakeCost) {
-                alert("Insufficient Predikto tokens! Invite friends via referral to earn more.");
+            if (predictionsToSubmit.length === 0) {
+                alert("Please enter at least one valid price prediction.");
+                return;
+            }
+
+            const totalCost = predictionsToSubmit.length * 10;
+
+            if (window.userData.balance < totalCost) {
+                alert(`Insufficient balance! Total cost for ${predictionsToSubmit.length} predictions is ${totalCost} Predikto tokens.`);
                 return;
             }
 
             try {
-                // Deduct balance locally and in Firestore
-                window.userData.balance -= stakeCost;
+                window.userData.balance -= totalCost;
                 const userRef = doc(db, "users", window.currentUser.uid);
                 await updateDoc(userRef, { balance: window.userData.balance });
                 document.getElementById('user-balance').textContent = `${window.userData.balance} Predikto`;
 
-                // Save prediction
-                await addDoc(collection(db, "predictions"), {
-                    userId: window.currentUser.uid,
-                    userName: window.currentUser.displayName,
-                    drawId: "#142",
-                    asset: "BTC",
-                    predictedPrice: priceInput,
-                    stake: stakeCost,
-                    status: "Active",
-                    result: "-",
-                    createdAt: serverTimestamp()
-                });
+                const drawId = "#DRAW-2026-42";
+                for (let price of predictionsToSubmit) {
+                    await addDoc(collection(db, "predictions"), {
+                        userId: window.currentUser.uid,
+                        userName: window.currentUser.displayName,
+                        drawId: drawId,
+                        asset: "BTC",
+                        predictedPrice: price,
+                        stake: 10,
+                        status: "Active",
+                        createdAt: serverTimestamp()
+                    });
+                }
 
-                alert("Prediction placed successfully on-chain/database!");
+                alert(`Successfully placed ${predictionsToSubmit.length} predictions!`);
+                inputs.forEach(inp => inp.value = '');
                 router('mypredictions');
                 loadUserPredictions();
+                loadLeaderboard();
             } catch (err) {
                 console.error(err);
-                alert("Error placing prediction.");
+                alert("Error submitting predictions.");
             }
         }
 
-        // Load User Predictions
-        async function loadUserPredictions() {
+        // Load User Predictions with Realtime Diff calculation
+        window.loadUserPredictions = async function() {
             if (!window.currentUser) return;
             const q = query(collection(db, "predictions"), where("userId", "==", window.currentUser.uid));
             const querySnapshot = await getDocs(q);
@@ -161,22 +174,89 @@
             tbody.innerHTML = '';
 
             if (querySnapshot.empty) {
-                tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-gray-500">No predictions found yet.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="6" class="p-8 text-center text-gray-500">No predictions found yet. Start predicting!</td></tr>`;
                 return;
             }
 
-            querySnapshot.forEach((doc) => {
-                const p = doc.data();
+            querySnapshot.forEach((docSnap) => {
+                const p = docSnap.data();
+                const predPrice = p.predictedPrice;
+                const livePrice = window.currentBtcPrice || predPrice;
+                const diff = predPrice - livePrice;
+                const diffFormatted = (diff >= 0 ? "+" : "") + diff.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                const diffColor = diff === 0 ? "text-gray-400" : (diff > 0 ? "text-emerald-400" : "text-rose-400");
+
+                let formattedDate = "Just now";
+                if (p.createdAt && p.createdAt.toDate) {
+                    const dateObj = p.createdAt.toDate();
+                    const day = String(dateObj.getDate()).padStart(2, '0');
+                    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+                    const year = dateObj.getFullYear();
+                    const hours = String(dateObj.getHours()).padStart(2, '0');
+                    const mins = String(dateObj.getMinutes()).padStart(2, '0');
+                    formattedDate = `${day}.${month}.${year} ${hours}:${mins}`;
+                }
+
                 tbody.innerHTML += `
-                    <tr class="hover:bg-gray-900/40 transition">
-                        <td class="p-4 font-bold">${p.drawId}</td>
-                        <td class="p-4"><span class="bg-gray-800 px-2 py-1 rounded text-xs">${p.asset}</span></td>
-                        <td class="p-4 font-mono">$${p.predictedPrice}</td>
-                        <td class="p-4">${p.stake} Predikto</td>
-                        <td class="p-4"><span class="bg-amber-500/10 text-amber-400 px-3 py-1 rounded-full text-xs font-semibold">${p.status}</span></td>
+                    <tr class="hover:bg-gray-800/40 transition border-b border-gray-800/60">
+                        <td class="p-4 font-bold text-white">${p.drawId}</td>
+                        <td class="p-4 font-mono text-emerald-300 font-bold">$${predPrice.toLocaleString()}</td>
+                        <td class="p-4 text-gray-300">${p.stake} Predikto</td>
+                        <td class="p-4 font-mono text-gray-200">$${livePrice.toLocaleString()}</td>
+                        <td class="p-4 font-mono font-bold ${diffColor}">${diffFormatted}</td>
+                        <td class="p-4 text-gray-400 text-xs">${formattedDate}</td>
                     </tr>
                 `;
             });
+        }
+
+        // Leaderboard: Realtime active predictions across all users
+        window.loadLeaderboard = async function() {
+            try {
+                const querySnapshot = await getDocs(collection(db, "predictions"));
+                const container = document.getElementById('leaderboard-list');
+                container.innerHTML = '';
+
+                if (querySnapshot.empty) {
+                    container.innerHTML = `<div class="p-6 text-center text-gray-500">No active predictions in the current draw yet.</div>`;
+                    return;
+                }
+
+                let items = [];
+                querySnapshot.forEach(docSnap => {
+                    items.push(docSnap.data());
+                });
+
+                // Sort by proximity to current live BTC price
+                items.sort((a, b) => {
+                    const diffA = Math.abs(a.predictedPrice - (window.currentBtcPrice || a.predictedPrice));
+                    const diffB = Math.abs(b.predictedPrice - (window.currentBtcPrice || b.predictedPrice));
+                    return diffA - diffB;
+                });
+
+                items.forEach((p, idx) => {
+                    const diff = p.predictedPrice - (window.currentBtcPrice || p.predictedPrice);
+                    const diffFormatted = (diff >= 0 ? "+" : "") + diff.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                    
+                    container.innerHTML += `
+                        <div class="flex items-center justify-between p-4 bg-gray-900/60 border border-gray-800 rounded-2xl hover:border-gray-700 transition">
+                            <div class="flex items-center space-x-4">
+                                <span class="w-8 h-8 rounded-xl bg-gray-800 flex items-center justify-center font-bold text-emerald-400 text-sm">#${idx + 1}</span>
+                                <div>
+                                    <div class="font-bold text-white">${p.userName || 'Anonymous Trader'}</div>
+                                    <div class="text-xs text-gray-400">Draw: ${p.drawId} | Asset: ${p.asset}</div>
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <div class="font-mono text-emerald-400 font-bold">$${p.predictedPrice.toLocaleString()}</div>
+                                <div class="text-xs font-mono text-gray-400">Offset: ${diffFormatted}</div>
+                            </div>
+                        </div>
+                    `;
+                });
+            } catch (e) {
+                console.error("Leaderboard load error:", e);
+            }
         }
     </script>
 
@@ -186,8 +266,8 @@
             theme: {
                 extend: {
                     colors: {
-                        darker: '#0b0f19',
-                        darkcard: '#131c2e',
+                        darker: '#090d16',
+                        darkcard: '#111827',
                         accent: '#10b981',
                     }
                 }
@@ -195,119 +275,164 @@
         }
     </script>
 </head>
-<body class="bg-darker text-gray-100 font-sans min-h-screen flex flex-col selection:bg-accent selection:text-white">
+<body class="bg-darker text-gray-100 font-sans min-h-screen flex flex-col selection:bg-emerald-500 selection:text-darker">
 
     <!-- Top Navigation -->
-    <header class="border-b border-gray-800 bg-darkcard/80 backdrop-blur sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+    <header class="border-b border-gray-800 bg-darkcard/90 backdrop-blur sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 h-20 flex items-center justify-between">
             <div class="flex items-center space-x-3 cursor-pointer" onclick="router('home')">
-                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-accent to-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-500/20">
-                    <i class="fa-solid fa-bolt text-darker text-lg font-bold"></i>
+                <div class="w-11 h-11 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                    <i class="fa-solid fa-bolt text-darker text-xl font-black"></i>
                 </div>
-                <span class="text-xl font-black tracking-wider bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">PREDIKTO</span>
+                <span class="text-2xl font-black tracking-wider bg-gradient-to-r from-white via-gray-200 to-gray-400 bg-clip-text text-transparent">PREDIKTO</span>
             </div>
 
-            <nav class="hidden md:flex items-center space-x-1 text-sm font-medium">
-                <button onclick="router('home')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-accent" data-page="home">Home</button>
-                <button onclick="router('draw')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-300" data-page="draw">Draw & Predictions</button>
-                <button onclick="router('mypredictions')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-300" data-page="mypredictions">My Predictions</button>
-                <button onclick="router('leaderboard')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-300" data-page="leaderboard">Leaderboard</button>
+            <nav class="hidden md:flex items-center space-x-2 text-sm font-semibold">
+                <button onclick="router('home')" class="nav-link px-4 py-2.5 rounded-xl hover:bg-gray-800 transition text-emerald-400 bg-gray-800/50" data-page="home">Home</button>
+                <button onclick="router('draw')" class="nav-link px-4 py-2.5 rounded-xl hover:bg-gray-800 transition text-gray-400" data-page="draw">Draw & Predictions</button>
+                <button onclick="router('mypredictions')" class="nav-link px-4 py-2.5 rounded-xl hover:bg-gray-800 transition text-gray-400" data-page="mypredictions">My Predictions</button>
+                <button onclick="router('leaderboard')" class="nav-link px-4 py-2.5 rounded-xl hover:bg-gray-800 transition text-gray-400" data-page="leaderboard">Live Leaderboard</button>
             </nav>
 
-            <div class="flex items-center space-x-3">
-                <div class="hidden sm:flex items-center bg-gray-900 border border-gray-800 px-3 py-1.5 rounded-xl text-xs space-x-2">
-                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                    <span class="text-gray-400">BTC Live:</span>
-                    <span id="live-btc-price" class="font-bold text-white">Loading...</span>
+            <div class="flex items-center space-x-4">
+                <div class="hidden sm:flex items-center bg-gray-900 border border-gray-800 px-4 py-2 rounded-2xl text-xs space-x-2 shadow-inner">
+                    <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span class="text-gray-400 font-medium">BTC Live:</span>
+                    <span id="live-btc-price" class="font-mono font-bold text-white text-sm">Loading...</span>
                 </div>
                 <div id="auth-container">
-                    <!-- Dynamic Auth Button injected by script -->
+                    <!-- Dynamic Auth Button injected -->
                 </div>
             </div>
         </div>
     </header>
 
-    <!-- Main Content -->
-    <main class="flex-grow max-w-7xl w-full mx-auto px-4 py-8">
+    <!-- Main Content Container -->
+    <main class="flex-grow max-w-7xl w-full mx-auto px-4 py-10">
         
         <!-- Home Page -->
         <div id="page-home" class="page-view space-y-12">
-            <div class="rounded-3xl bg-gradient-to-b from-darkcard to-gray-900 border border-gray-800 p-8 md:p-12 shadow-2xl space-y-6">
-                <div class="inline-flex items-center space-x-2 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full text-emerald-400 text-xs font-semibold">
+            <div class="rounded-3xl bg-gradient-to-br from-darkcard via-gray-900 to-darkcard border border-gray-800 p-10 md:p-16 shadow-2xl space-y-8 relative overflow-hidden">
+                <div class="absolute -right-10 -bottom-10 w-96 h-96 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none"></div>
+                <div class="inline-flex items-center space-x-2 bg-emerald-500/10 border border-emerald-500/20 px-4 py-1.5 rounded-full text-emerald-400 text-xs font-bold">
                     <i class="fa-solid fa-gift"></i>
                     <span>Receive 100 Free Predikto Tokens upon Registration!</span>
                 </div>
-                <h1 class="text-4xl md:text-6xl font-black tracking-tight leading-none">
-                    Predict the Price. Earn <span class="bg-gradient-to-r from-emerald-400 to-teal-200 bg-clip-text text-transparent">Predikto</span>.
+                <h1 class="text-4xl md:text-7xl font-black tracking-tight leading-tight">
+                    Predict the Market. <br>Earn <span class="bg-gradient-to-r from-emerald-400 to-teal-300 bg-clip-text text-transparent">Predikto</span>.
                 </h1>
-                <p class="text-gray-400 text-base md:text-lg max-w-2xl">
-                    Social prediction protocol powered by internal tokens. Compete with global traders, climb leaderboards, and test your market intuition.
+                <p class="text-gray-400 text-lg md:text-xl max-w-2xl font-normal leading-relaxed">
+                    Social prediction protocol powered by internal tokens. Compete with global traders in real-time, submit multiple predictions per draw, and test your precision.
                 </p>
-                <button onclick="router('draw')" class="bg-emerald-500 hover:bg-emerald-600 text-darker font-bold px-8 py-4 rounded-2xl shadow-lg transition">
-                    Start Predicting
-                </button>
+                <div class="flex flex-wrap gap-4 pt-4">
+                    <button onclick="router('draw')" class="bg-emerald-500 hover:bg-emerald-600 text-darker font-extrabold px-8 py-4 rounded-2xl shadow-xl shadow-emerald-500/20 transition flex items-center space-x-3">
+                        <span>Start Predicting Now</span>
+                        <i class="fa-solid fa-arrow-right"></i>
+                    </button>
+                    <button onclick="router('leaderboard')" class="bg-gray-800 hover:bg-gray-700 text-gray-200 font-bold px-8 py-4 rounded-2xl border border-gray-700 transition">
+                        View Live Leaderboard
+                    </button>
+                </div>
             </div>
         </div>
 
-        <!-- Draw Page -->
+        <!-- Draw & Multi-Predictions Page -->
         <div id="page-draw" class="page-view hidden space-y-8">
-            <div class="flex justify-between items-center border-b border-gray-800 pb-6">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-gray-800 pb-6 gap-4">
                 <div>
-                    <h1 class="text-3xl font-black">Prediction Panel</h1>
-                    <p class="text-gray-400 text-sm">Use your internal token balance to submit predictions for active draws.</p>
+                    <h1 class="text-3xl font-black tracking-tight">Active Draw & Predictions</h1>
+                    <p class="text-gray-400 text-sm">Submit multiple price predictions simultaneously. Cost: 10 Predikto tokens per prediction.</p>
                 </div>
-                <div class="bg-darkcard border border-gray-800 px-4 py-2 rounded-xl">
-                    <span class="text-xs text-gray-400">Balance:</span>
-                    <span id="user-balance" class="font-bold text-emerald-400">0 Predikto</span>
+                <div class="bg-darkcard border border-gray-800 px-5 py-3 rounded-2xl flex items-center space-x-3 shadow-inner">
+                    <span class="text-xs text-gray-400 font-medium">Available Balance:</span>
+                    <span id="user-balance" class="font-mono font-bold text-emerald-400 text-base">0 Predikto</span>
                 </div>
             </div>
-            <div class="bg-darkcard border border-gray-800 rounded-3xl p-6 space-y-4 max-w-xl">
-                <label class="text-sm font-medium">Estimated BTC Price ($)</label>
-                <input type="number" id="pred-price" value="68000" class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 text-white font-bold">
-                <button onclick="placePrediction()" class="w-full bg-emerald-500 hover:bg-emerald-600 text-darker font-bold py-3 rounded-xl transition">
-                    Place Prediction (Cost: 10 Tokens)
+
+            <div class="bg-darkcard border border-gray-800 rounded-3xl p-8 space-y-6 max-w-2xl shadow-xl">
+                <div class="flex justify-between items-center">
+                    <h3 class="font-bold text-lg text-white">BTC/USDT Price Predictions</h3>
+                    <span class="text-xs bg-emerald-500/10 text-emerald-400 px-3 py-1 rounded-full font-semibold">Draw #DRAW-2026-42</span>
+                </div>
+                
+                <div id="prediction-inputs-container" class="space-y-4">
+                    <div class="flex items-center space-x-3">
+                        <div class="relative flex-grow">
+                            <span class="absolute inset-y-0 left-0 pl-4 flex items-center text-gray-500 font-mono">$</span>
+                            <input type="number" placeholder="Enter target BTC price" class="prediction-input w-full bg-gray-900 border border-gray-800 focus:border-emerald-500 rounded-2xl pl-8 pr-4 py-3.5 text-white font-mono font-bold outline-none transition">
+                        </div>
+                        <span class="text-xs text-gray-500 font-semibold w-20 text-right">10 Tokens</span>
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <div class="relative flex-grow">
+                            <span class="absolute inset-y-0 left-0 pl-4 flex items-center text-gray-500 font-mono">$</span>
+                            <input type="number" placeholder="Enter target BTC price" class="prediction-input w-full bg-gray-900 border border-gray-800 focus:border-emerald-500 rounded-2xl pl-8 pr-4 py-3.5 text-white font-mono font-bold outline-none transition">
+                        </div>
+                        <span class="text-xs text-gray-500 font-semibold w-20 text-right">10 Tokens</span>
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <div class="relative flex-grow">
+                            <span class="absolute inset-y-0 left-0 pl-4 flex items-center text-gray-500 font-mono">$</span>
+                            <input type="number" placeholder="Enter target BTC price" class="prediction-input w-full bg-gray-900 border border-gray-800 focus:border-emerald-500 rounded-2xl pl-8 pr-4 py-3.5 text-white font-mono font-bold outline-none transition">
+                        </div>
+                        <span class="text-xs text-gray-500 font-semibold w-20 text-right">10 Tokens</span>
+                    </div>
+                </div>
+
+                <div class="flex justify-between items-center pt-2">
+                    <button onclick="addPredictionInput()" class="text-xs text-emerald-400 font-bold hover:text-emerald-300 transition flex items-center space-x-1.5">
+                        <i class="fa-solid fa-plus"></i>
+                        <span>Add Another Prediction Slot</span>
+                    </button>
+                </div>
+
+                <button onclick="placeMultiplePredictions()" class="w-full bg-emerald-500 hover:bg-emerald-600 text-darker font-black py-4 rounded-2xl shadow-xl shadow-emerald-500/20 transition text-base">
+                    Submit All Predictions
                 </button>
             </div>
         </div>
 
-        <!-- My Predictions & Referral Page -->
+        <!-- My Predictions Page -->
         <div id="page-mypredictions" class="page-view hidden space-y-8">
-            <div class="border-b border-gray-800 pb-6">
-                <h1 class="text-3xl font-black">My Predictions & Referral Program</h1>
-                <p class="text-gray-400 text-sm">Track your active bets and invite friends to earn token bonuses.</p>
+            <div class="border-b border-gray-800 pb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                    <h1 class="text-3xl font-black tracking-tight">My Predictions & Referral Program</h1>
+                    <p class="text-gray-400 text-sm">Real-time tracking of your active bets compared against live BTC market prices.</p>
+                </div>
             </div>
 
             <!-- Referral Card -->
-            <div class="bg-darkcard border border-gray-800 rounded-3xl p-6 space-y-4">
-                <h3 class="font-bold text-lg flex items-center space-x-2">
+            <div class="bg-darkcard border border-gray-800 rounded-3xl p-8 space-y-4 shadow-xl">
+                <h3 class="font-bold text-lg flex items-center space-x-2 text-white">
                     <i class="fa-solid fa-users text-emerald-400"></i>
                     <span>Your Unique Referral Link</span>
                 </h3>
                 <p class="text-xs text-gray-400">Earn 100 Predikto bonus tokens when your invited friend places their first prediction.</p>
-                <div class="flex space-x-2">
-                    <input type="text" id="referral-link" readonly class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-2 text-sm text-gray-300 font-mono" value="Sign in to generate link">
-                    <button onclick="copyRefLink()" class="bg-emerald-500 hover:bg-emerald-600 text-darker font-bold px-5 rounded-xl text-sm transition">Copy</button>
+                <div class="flex space-x-3">
+                    <input type="text" id="referral-link" readonly class="w-full bg-gray-900 border border-gray-800 rounded-2xl px-4 py-3 text-sm text-gray-300 font-mono outline-none" value="Sign in to generate link">
+                    <button onclick="copyRefLink()" class="bg-emerald-500 hover:bg-emerald-600 text-darker font-bold px-6 rounded-2xl text-sm transition">Copy</button>
                 </div>
             </div>
 
             <!-- Predictions Table -->
-            <div class="bg-darkcard border border-gray-800 rounded-3xl overflow-hidden shadow-xl">
+            <div class="bg-darkcard border border-gray-800 rounded-3xl overflow-hidden shadow-2xl">
                 <div class="p-6 border-b border-gray-800">
-                    <h3 class="font-bold text-lg">Prediction History</h3>
+                    <h3 class="font-bold text-lg text-white">Prediction History & Realtime Performance</h3>
                 </div>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left text-sm">
-                        <thead class="bg-gray-900/80 text-gray-400 border-b border-gray-800 uppercase text-xs tracking-wider">
+                        <thead class="bg-gray-900/80 text-gray-400 border-b border-gray-800 uppercase text-xs tracking-wider font-mono">
                             <tr>
                                 <th class="p-4">Draw ID</th>
-                                <th class="p-4">Asset</th>
-                                <th class="p-4">Predicted Price</th>
+                                <th class="p-4">Prediction</th>
                                 <th class="p-4">Stake</th>
-                                <th class="p-4">Status</th>
+                                <th class="p-4">Realtime Price</th>
+                                <th class="p-4">Difference</th>
+                                <th class="p-4">Time</th>
                             </tr>
                         </thead>
                         <tbody id="my-predictions-tbody" class="divide-y divide-gray-800 text-gray-300">
-                            <tr><td colspan="5" class="p-6 text-center text-gray-500">Please sign in to view your predictions.</td></tr>
+                            <tr><td colspan="6" class="p-8 text-center text-gray-500">Please sign in to view your predictions.</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -315,10 +440,16 @@
         </div>
 
         <!-- Leaderboard Page -->
-        <div id="page-leaderboard" class="page-view hidden space-y-6">
-            <h1 class="text-3xl font-black">Global Leaderboard</h1>
-            <div class="bg-darkcard border border-gray-800 rounded-3xl p-6 text-gray-400">
-                Top predictors ranking based on accurate closes and total token winnings.
+        <div id="page-leaderboard" class="page-view hidden space-y-8">
+            <div class="border-b border-gray-800 pb-6">
+                <h1 class="text-3xl font-black tracking-tight">Live Leaderboard</h1>
+                <p class="text-gray-400 text-sm">Real-time ranking of all active predictions in the current draw, sorted by proximity to the live BTC price.</p>
+            </div>
+            
+            <div class="bg-darkcard border border-gray-800 rounded-3xl p-6 shadow-2xl">
+                <div id="leaderboard-list" class="space-y-3">
+                    <div class="p-8 text-center text-gray-500">Loading active predictions...</div>
+                </div>
             </div>
         </div>
     </main>
@@ -334,25 +465,48 @@
             <div class="flex space-x-6">
                 <button onclick="router('home')" class="hover:text-gray-300 transition">Home</button>
                 <button onclick="router('draw')" class="hover:text-gray-300 transition">Predictions</button>
+                <button onclick="router('leaderboard')" class="hover:text-gray-300 transition">Leaderboard</button>
             </div>
         </div>
     </footer>
 
-    <!-- Frontend UI Scripts -->
+    <!-- App Logic Scripts -->
     <script>
         function router(pageId) {
             document.querySelectorAll('.page-view').forEach(el => el.classList.add('hidden'));
             document.getElementById(`page-${pageId}`).classList.remove('hidden');
             
             document.querySelectorAll('.nav-link').forEach(el => {
-                el.classList.remove('text-accent');
-                el.classList.add('text-gray-300');
+                el.classList.remove('text-emerald-400', 'bg-gray-800/50');
+                el.classList.add('text-gray-400');
                 if(el.dataset.page === pageId) {
-                    el.classList.add('text-accent');
-                    el.classList.remove('text-gray-300');
+                    el.classList.add('text-emerald-400', 'bg-gray-800/50');
+                    el.classList.remove('text-gray-400');
                 }
             });
+
+            if(pageId === 'leaderboard') {
+                loadLeaderboard();
+            }
+            if(pageId === 'mypredictions') {
+                loadUserPredictions();
+            }
+
             window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        function addPredictionInput() {
+            const container = document.getElementById('prediction-inputs-container');
+            const div = document.createElement('div');
+            div.className = "flex items-center space-x-3";
+            div.innerHTML = `
+                <div class="relative flex-grow">
+                    <span class="absolute inset-y-0 left-0 pl-4 flex items-center text-gray-500 font-mono">$</span>
+                    <input type="number" placeholder="Enter target BTC price" class="prediction-input w-full bg-gray-900 border border-gray-800 focus:border-emerald-500 rounded-2xl pl-8 pr-4 py-3.5 text-white font-mono font-bold outline-none transition">
+                </div>
+                <button onclick="this.parentElement.remove()" class="text-rose-400 hover:text-rose-300 px-3 py-2 text-sm"><i class="fa-solid fa-trash"></i></button>
+            `;
+            container.appendChild(div);
         }
 
         // Live BTC Price Feeder via Binance API
@@ -360,13 +514,15 @@
             try {
                 const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
                 const data = await res.json();
-                const price = parseFloat(data.price).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-                document.getElementById('live-btc-price').textContent = price;
+                window.currentBtcPrice = parseFloat(data.price);
+                const priceFormatted = window.currentBtcPrice.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+                document.getElementById('live-btc-price').textContent = priceFormatted;
             } catch (e) {
+                window.currentBtcPrice = 67842.00;
                 document.getElementById('live-btc-price').textContent = '$67,842.00';
             }
         }
-        setInterval(fetchBtcPrice, 10000);
+        setInterval(fetchBtcPrice, 5000);
         fetchBtcPrice();
 
         function copyRefLink() {
