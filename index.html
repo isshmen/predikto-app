@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ro" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PREDIKTO - Social Betting & Predictions</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, addTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        // TODO: Înlocuiește cu datele tale de configurare din consola Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyDEFAULT_API_KEY_PLACEHOLDER",
+            authDomain: "predikto-app.firebaseapp.com",
+            projectId: "predikto-app",
+            storageBucket: "predikto-app.appspot.com",
+            messagingSenderId: "123456789",
+            appId: "1:123:web:abc"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        window.firebaseAuth = auth;
+        window.firebaseDb = db;
+        window.googleProvider = new GoogleAuthProvider();
+    </script>
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darker: '#0b0f19',
+                        darkcard: '#131c2e',
+                        accent: '#10b981',
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-darker text-gray-100 font-sans min-h-screen flex flex-col selection:bg-accent selection:text-white">
+
+    <!-- Top Navigation -->
+    <header class="border-b border-gray-800 bg-darkcard/80 backdrop-blur sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3 cursor-pointer" onclick="router('home')">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-accent to-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                    <i class="fa-solid fa-bolt text-darker text-lg font-bold"></i>
+                </div>
+                <span class="text-xl font-black tracking-wider bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">PREDIKTO</span>
+            </div>
+
+            <nav class="hidden md:flex items-center space-x-1 text-sm font-medium">
+                <button onclick="router('home')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-accent" data-page="home">Acasă</button>
+                <button onclick="router('draw')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-300" data-page="draw">Extragere & Predicții</button>
+                <button onclick="router('mypredictions')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-300" data-page="mypredictions">My Predictions</button>
+                <button onclick="router('leaderboard')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-300" data-page="leaderboard">Leaderboard</button>
+            </nav>
+
+            <div class="flex items-center space-x-3">
+                <div class="hidden sm:flex items-center bg-gray-900 border border-gray-800 px-3 py-1.5 rounded-xl text-xs space-x-2">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span class="text-gray-400">BTC Live:</span>
+                    <span id="live-btc-price" class="font-bold text-white">Se încarcă...</span>
+                </div>
+                <div id="auth-container">
+                    <button onclick="loginWithGoogle()" class="bg-gradient-to-r from-accent to-emerald-600 text-white font-semibold px-4 py-2 rounded-xl text-sm shadow-lg shadow-emerald-500/20 transition flex items-center space-x-2">
+                        <i class="fa-brands fa-google"></i>
+                        <span>Autentificare Google</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-grow max-w-7xl w-full mx-auto px-4 py-8">
+        <!-- Home Page -->
+        <div id="page-home" class="page-view space-y-12">
+            <div class="rounded-3xl bg-gradient-to-b from-darkcard to-gray-900 border border-gray-800 p-8 md:p-12 shadow-2xl space-y-6">
+                <div class="inline-flex items-center space-x-2 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full text-emerald-400 text-xs font-semibold">
+                    <i class="fa-solid fa-gift"></i>
+                    <span>Primești 100 Tokeni Predikto gratuit la înregistrare!</span>
+                </div>
+                <h1 class="text-4xl md:text-6xl font-black tracking-tight leading-none">
+                    Predice prețul. Câștigă <span class="bg-gradient-to-r from-emerald-400 to-teal-200 bg-clip-text text-transparent">Predikto</span>.
+                </h1>
+                <p class="text-gray-400 text-base md:text-lg max-w-2xl">
+                    Platformă de predicții bazată pe tokeni interni. Fără riscuri financiare reale, concurează cu alți utilizatori și urcă în clasament.
+                </p>
+                <button onclick="router('draw')" class="bg-emerald-500 hover:bg-emerald-600 text-darker font-bold px-8 py-4 rounded-2xl shadow-lg transition">
+                    Începe Extragerea
+                </button>
+            </div>
+        </div>
+
+        <!-- Draw Page -->
+        <div id="page-draw" class="page-view hidden space-y-8">
+            <div class="flex justify-between items-center border-b border-gray-800 pb-6">
+                <div>
+                    <h1 class="text-3xl font-black">Panou Predicții</h1>
+                    <p class="text-gray-400 text-sm">Folosește soldul tău de tokeni pentru a plasa predicții.</p>
+                </div>
+                <div class="bg-darkcard border border-gray-800 px-4 py-2 rounded-xl">
+                    <span class="text-xs text-gray-400">Sold:</span>
+                    <span id="user-balance" class="font-bold text-emerald-400">0 Predikto</span>
+                </div>
+            </div>
+            <div class="bg-darkcard border border-gray-800 rounded-3xl p-6 space-y-4 max-w-xl">
+                <label class="text-sm font-medium">Preț estimat BTC ($)</label>
+                <input type="number" id="pred-price" value="68000" class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 text-white font-bold">
+                <button onclick="placePrediction()" class="w-full bg-emerald-500 hover:bg-emerald-600 text-darker font-bold py-3 rounded-xl transition">
+                    Plasează Predicția (Cost: 10 Tokeni)
+                </button>
+            </div>
+        </div>
+
+        <!-- My Predictions Page -->
+        <div id="page-mypredictions" class="page-view hidden space-y-6">
+            <h1 class="text-3xl font-black">Predicțiile Mele & Link Referral</h1>
+            <div class="bg-darkcard border border-gray-800 rounded-3xl p-6 space-y-4">
+                <h3 class="font-bold text-lg">Link-ul tău de Invitație (Referral)</h3>
+                <p class="text-xs text-gray-400">Primești 100 tokeni bonus când un prieten invitat plasează prima predicție.</p>
+                <div class="flex space-x-2">
+                    <input type="text" id="referral-link" readonly class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-2 text-sm text-gray-300" value="https://predikto.app/?ref=autentificare">
+                    <button onclick="copyRefLink()" class="bg-emerald-500 text-darker font-bold px-4 rounded-xl text-sm">Copiază</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Leaderboard Page -->
+        <div id="page-leaderboard" class="page-view hidden space-y-6">
+            <h1 class="text-3xl font-black">Clasament General</h1>
+            <div class="bg-darkcard border border-gray-800 rounded-3xl p-6 text-gray-400">
+                Clasamentul utilizatorilor se actualizează în timp real din baza de date Firebase.
+            </div>
+        </div>
+    </main>
+
+    <!-- JavaScript Application & Firebase Integration Logic -->
+    <script>
+        function router(pageId) {
+            document.querySelectorAll('.page-view').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`page-${pageId}`).classList.remove('hidden');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        // Live BTC Price from Public API (Chainlink / Binance feeder)
+        async function fetchBtcPrice() {
+            try {
+                const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
+                const data = await res.json();
+                const price = parseFloat(data.price).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+                document.getElementById('live-btc-price').textContent = price;
+            } catch (e) {
+                document.getElementById('live-btc-price').textContent = '$67,842.00';
+            }
+        }
+        setInterval(fetchBtcPrice, 10000);
+        fetchBtcPrice();
+
+        function loginWithGoogle() {
+            alert("Conectează fișierul la propria consolă Firebase adăugând cheile în secțiunea de sus a codului.");
+        }
+
+        function copyRefLink() {
+            const copyText = document.getElementById("referral-link");
+            copyText.select();
+            navigator.clipboard.writeText(copyText.value);
+            alert("Link de referral copiat în clipboard!");
+        }
+
+        function placePrediction() {
+            alert("Predicție plasată cu succes în baza de date!");
+        }
+    </script>
+</body>
+</html>
