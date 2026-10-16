@@ -11,7 +11,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc, getDocs, query, where, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc, getDocs, query, where, orderBy, limit, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         // ==========================================
         // FIREBASE CONFIGURATION
@@ -104,6 +104,50 @@
             await signOut(auth);
             router('home');
         }
+
+        // Live Predictions Realtime Ticker for Home
+        function initHomeLivePredictions() {
+            const q = query(collection(db, "predictions"), orderBy("createdAt", "desc"), limit(6));
+            onSnapshot(q, (snapshot) => {
+                const ticker = document.getElementById('home-predictions-feed');
+                if (!ticker) return;
+                ticker.innerHTML = '';
+
+                if (snapshot.empty) {
+                    ticker.innerHTML = `<div class="p-6 text-center text-gray-500">No predictions submitted yet. Be the first to predict!</div>`;
+                    return;
+                }
+
+                snapshot.forEach((docSnap) => {
+                    const p = docSnap.data();
+                    const livePrice = window.currentBtcPrice || p.predictedPrice;
+                    const diff = p.predictedPrice - livePrice;
+                    const diffFormatted = (diff >= 0 ? "+" : "") + diff.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                    const diffColor = diff >= 0 ? "text-emerald-400" : "text-rose-400";
+
+                    ticker.innerHTML += `
+                        <div class="bg-gray-900/60 border border-gray-800 p-4 rounded-2xl flex items-center justify-between hover:border-gray-700 transition">
+                            <div class="flex items-center space-x-3">
+                                <div class="w-10 h-10 rounded-xl bg-gray-800 flex items-center justify-center text-emerald-400 font-bold text-sm">
+                                    <i class="fa-brands fa-bitcoin"></i>
+                                </div>
+                                <div>
+                                    <div class="font-bold text-white text-sm">${p.userName || 'Trader'}</div>
+                                    <div class="text-xs text-gray-400">${p.drawId}</div>
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <div class="font-mono font-bold text-emerald-400 text-sm">$${p.predictedPrice.toLocaleString()}</div>
+                                <div class="text-xs font-mono ${diffColor}">Offset: ${diffFormatted}</div>
+                            </div>
+                        </div>
+                    `;
+                });
+            }, (error) => {
+                console.error("Snapshot error:", error);
+            });
+        }
+        initHomeLivePredictions();
 
         // Multi-Prediction System Handler
         window.placeMultiplePredictions = async function() {
@@ -227,7 +271,6 @@
                     items.push(docSnap.data());
                 });
 
-                // Sort by proximity to current live BTC price
                 items.sort((a, b) => {
                     const diffA = Math.abs(a.predictedPrice - (window.currentBtcPrice || a.predictedPrice));
                     const diffB = Math.abs(b.predictedPrice - (window.currentBtcPrice || b.predictedPrice));
@@ -311,29 +354,149 @@
     <main class="flex-grow max-w-7xl w-full mx-auto px-4 py-10">
         
         <!-- Home Page -->
-        <div id="page-home" class="page-view space-y-12">
-            <div class="rounded-3xl bg-gradient-to-br from-darkcard via-gray-900 to-darkcard border border-gray-800 p-10 md:p-16 shadow-2xl space-y-8 relative overflow-hidden">
-                <div class="absolute -right-10 -bottom-10 w-96 h-96 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none"></div>
-                <div class="inline-flex items-center space-x-2 bg-emerald-500/10 border border-emerald-500/20 px-4 py-1.5 rounded-full text-emerald-400 text-xs font-bold">
-                    <i class="fa-solid fa-gift"></i>
-                    <span>Receive 100 Free Predikto Tokens upon Registration!</span>
+        <div id="page-home" class="page-view space-y-16">
+            
+            <!-- Hero Section with Live BTC Card -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+                <div class="lg:col-span-7 space-y-6">
+                    <div class="inline-flex items-center space-x-2 bg-emerald-500/10 border border-emerald-500/20 px-4 py-1.5 rounded-full text-emerald-400 text-xs font-bold">
+                        <i class="fa-solid fa-gift"></i>
+                        <span>Get 100 Free Predikto Tokens on Sign Up</span>
+                    </div>
+                    <h1 class="text-4xl md:text-6xl font-black tracking-tight leading-tight">
+                        Predict Bitcoin Price. <br><span class="bg-gradient-to-r from-emerald-400 to-teal-300 bg-clip-text text-transparent">Zero Risk. Pure Skill.</span>
+                    </h1>
+                    <p class="text-gray-400 text-lg font-normal leading-relaxed">
+                        Compete in real-time Bitcoin price draws using internal tokens. Submit predictions, track live market offsets, earn referral bonuses, and top the global leaderboard.
+                    </p>
+                    <div class="flex flex-wrap gap-4 pt-2">
+                        <button onclick="router('draw')" class="bg-emerald-500 hover:bg-emerald-600 text-darker font-extrabold px-8 py-4 rounded-2xl shadow-xl shadow-emerald-500/20 transition flex items-center space-x-3">
+                            <span>Place Prediction Now</span>
+                            <i class="fa-solid fa-arrow-right"></i>
+                        </button>
+                        <button onclick="router('leaderboard')" class="bg-gray-800 hover:bg-gray-700 text-gray-200 font-bold px-8 py-4 rounded-2xl border border-gray-700 transition">
+                            View Live Leaderboard
+                        </button>
+                    </div>
                 </div>
-                <h1 class="text-4xl md:text-7xl font-black tracking-tight leading-tight">
-                    Predict the Market. <br>Earn <span class="bg-gradient-to-r from-emerald-400 to-teal-300 bg-clip-text text-transparent">Predikto</span>.
-                </h1>
-                <p class="text-gray-400 text-lg md:text-xl max-w-2xl font-normal leading-relaxed">
-                    Social prediction protocol powered by internal tokens. Compete with global traders in real-time, submit multiple predictions per draw, and test your precision.
-                </p>
-                <div class="flex flex-wrap gap-4 pt-4">
-                    <button onclick="router('draw')" class="bg-emerald-500 hover:bg-emerald-600 text-darker font-extrabold px-8 py-4 rounded-2xl shadow-xl shadow-emerald-500/20 transition flex items-center space-x-3">
-                        <span>Start Predicting Now</span>
-                        <i class="fa-solid fa-arrow-right"></i>
-                    </button>
-                    <button onclick="router('leaderboard')" class="bg-gray-800 hover:bg-gray-700 text-gray-200 font-bold px-8 py-4 rounded-2xl border border-gray-700 transition">
-                        View Live Leaderboard
-                    </button>
+
+                <!-- Featured BTC Live Asset Card -->
+                <div class="lg:col-span-5">
+                    <div class="bg-darkcard border border-gray-800 rounded-3xl p-8 shadow-2xl relative overflow-hidden space-y-6">
+                        <div class="flex justify-between items-center">
+                            <div class="flex items-center space-x-3">
+                                <div class="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-500 font-black text-2xl">
+                                    <i class="fa-brands fa-bitcoin"></i>
+                                </div>
+                                <div>
+                                    <h3 class="font-bold text-white text-lg">Bitcoin</h3>
+                                    <span class="text-xs text-gray-400 font-mono">BTC/USDT Feed</span>
+                                </div>
+                            </div>
+                            <span class="bg-emerald-500/10 text-emerald-400 text-xs font-bold px-3 py-1 rounded-full animate-pulse">Active Draw</span>
+                        </div>
+
+                        <div>
+                            <div class="text-xs text-gray-400 font-medium">Binance Realtime Price</div>
+                            <div id="hero-btc-price" class="text-4xl font-black font-mono text-emerald-400 mt-1">Loading...</div>
+                        </div>
+
+                        <div class="pt-2 border-t border-gray-800 flex justify-between items-center text-xs">
+                            <span class="text-gray-400">Entry Stake: <strong class="text-white">10 Predikto</strong></span>
+                            <button onclick="router('draw')" class="text-emerald-400 font-bold hover:underline flex items-center space-x-1">
+                                <span>Enter Draw</span>
+                                <i class="fa-solid fa-chevron-right text-xs"></i>
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
+
+            <!-- How It Works (3 Steps) -->
+            <div class="space-y-8">
+                <div class="text-center space-y-2">
+                    <h2 class="text-3xl font-black tracking-tight">How PREDIKTO Works</h2>
+                    <p class="text-gray-400 text-sm max-w-xl mx-auto">Start predicting in three simple steps without depositing any real money.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-darkcard border border-gray-800 p-8 rounded-3xl space-y-4 shadow-xl">
+                        <div class="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-400 font-bold text-xl flex items-center justify-center">1</div>
+                        <h3 class="font-bold text-lg text-white">Sign Up & Claim 100 Tokens</h3>
+                        <p class="text-gray-400 text-sm">Create an account with Google in seconds. Receive 100 free Predikto tokens immediately upon registration.</p>
+                    </div>
+
+                    <div class="bg-darkcard border border-gray-800 p-8 rounded-3xl space-y-4 shadow-xl">
+                        <div class="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-400 font-bold text-xl flex items-center justify-center">2</div>
+                        <h3 class="font-bold text-lg text-white">Submit Multiple Predictions</h3>
+                        <p class="text-gray-400 text-sm">Enter your target BTC prices for the active draw. Submit single or multi-slot entries for 10 tokens each.</p>
+                    </div>
+
+                    <div class="bg-darkcard border border-gray-800 p-8 rounded-3xl space-y-4 shadow-xl">
+                        <div class="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-400 font-bold text-xl flex items-center justify-center">3</div>
+                        <h3 class="font-bold text-lg text-white">Track & Win Rewards</h3>
+                        <p class="text-gray-400 text-sm">Watch live price offsets update in real-time, invite friends for 100 token referral rewards, and top the leaderboard.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Realtime Predictions Stream -->
+            <div class="space-y-6">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <h2 class="text-2xl font-black tracking-tight">Recent Live Predictions</h2>
+                        <p class="text-gray-400 text-xs">Real-time stream of predictions placed by traders across the platform.</p>
+                    </div>
+                    <button onclick="router('leaderboard')" class="text-xs text-emerald-400 font-bold hover:underline">View All</button>
+                </div>
+
+                <div id="home-predictions-feed" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div class="p-6 text-center text-gray-500 bg-darkcard rounded-2xl col-span-full">Loading live predictions stream...</div>
+                </div>
+            </div>
+
+            <!-- Referral Banner -->
+            <div class="bg-gradient-to-r from-emerald-500/10 via-darkcard to-darkcard border border-emerald-500/20 p-8 rounded-3xl flex flex-col md:flex-row items-center justify-between gap-6">
+                <div class="space-y-2">
+                    <span class="text-xs font-bold text-emerald-400 uppercase tracking-wider">Referral Program</span>
+                    <h3 class="text-2xl font-black text-white">Earn 100 Free Tokens Per Referral</h3>
+                    <p class="text-gray-400 text-sm max-w-xl">Share your unique link with friends. Whenever a referred friend signs up and submits their first prediction, you automatically receive 100 Predikto tokens.</p>
+                </div>
+                <button onclick="router('mypredictions')" class="bg-emerald-500 hover:bg-emerald-600 text-darker font-extrabold px-6 py-3.5 rounded-2xl shadow-lg transition whitespace-nowrap">
+                    Get My Referral Link
+                </button>
+            </div>
+
+            <!-- FAQ Section -->
+            <div class="space-y-8 pt-6">
+                <div class="text-center space-y-2">
+                    <h2 class="text-3xl font-black tracking-tight">Frequently Asked Questions</h2>
+                    <p class="text-gray-400 text-sm">Everything you need to know about PREDIKTO.</p>
+                </div>
+
+                <div class="max-w-3xl mx-auto space-y-4">
+                    <div class="bg-darkcard border border-gray-800 p-6 rounded-2xl space-y-2">
+                        <h4 class="font-bold text-white">Is real money required to play?</h4>
+                        <p class="text-gray-400 text-sm">No. PREDIKTO is a free social betting platform using internal tokens called Predikto. You receive 100 free tokens upon registration and can earn more via referrals.</p>
+                    </div>
+
+                    <div class="bg-darkcard border border-gray-800 p-6 rounded-2xl space-y-2">
+                        <h4 class="font-bold text-white">How is the live Bitcoin price determined?</h4>
+                        <p class="text-gray-400 text-sm">The live price is fetched continuously from public Binance market data feeds, ensuring transparent real-time offset calculations.</p>
+                    </div>
+
+                    <div class="bg-darkcard border border-gray-800 p-6 rounded-2xl space-y-2">
+                        <h4 class="font-bold text-white">How does the multi-prediction feature work?</h4>
+                        <p class="text-gray-400 text-sm">You can submit multiple target price predictions for the same active draw simultaneously. Each prediction costs 10 Predikto tokens from your balance.</p>
+                    </div>
+
+                    <div class="bg-darkcard border border-gray-800 p-6 rounded-2xl space-y-2">
+                        <h4 class="font-bold text-white">How do I earn referral tokens?</h4>
+                        <p class="text-gray-400 text-sm">Copy your unique referral link from the "My Predictions" tab. When a new user registers through your link and places their first prediction, 100 bonus tokens are credited to your balance.</p>
+                    </div>
+                </div>
+            </div>
+
         </div>
 
         <!-- Draw & Multi-Predictions Page -->
@@ -516,10 +679,21 @@
                 const data = await res.json();
                 window.currentBtcPrice = parseFloat(data.price);
                 const priceFormatted = window.currentBtcPrice.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-                document.getElementById('live-btc-price').textContent = priceFormatted;
+                
+                if (document.getElementById('live-btc-price')) {
+                    document.getElementById('live-btc-price').textContent = priceFormatted;
+                }
+                if (document.getElementById('hero-btc-price')) {
+                    document.getElementById('hero-btc-price').textContent = priceFormatted;
+                }
             } catch (e) {
                 window.currentBtcPrice = 67842.00;
-                document.getElementById('live-btc-price').textContent = '$67,842.00';
+                if (document.getElementById('live-btc-price')) {
+                    document.getElementById('live-btc-price').textContent = '$67,842.00';
+                }
+                if (document.getElementById('hero-btc-price')) {
+                    document.getElementById('hero-btc-price').textContent = '$67,842.00';
+                }
             }
         }
         setInterval(fetchBtcPrice, 5000);
