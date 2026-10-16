@@ -11,7 +11,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc, getDocs, query, where, orderBy, limit, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc, getDocs, query, where, orderBy, limit, onSnapshot, serverTimestamp, increment } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         // ==========================================
         // FIREBASE CONFIGURATION
@@ -33,6 +33,21 @@
         window.currentUser = null;
         window.userData = null;
         window.currentBtcPrice = 0;
+        window.currentDrawId = "1";
+
+        // Prize distribution percentages
+        window.prizePercentages = {
+            1: 0.27,
+            2: 0.162,
+            3: 0.108,
+            4: 0.081,
+            5: 0.063,
+            6: 0.054,
+            7: 0.049,
+            8: 0.044,
+            9: 0.039,
+            10: 0.030
+        };
 
         // Auth State Listener
         onAuthStateChanged(auth, async (user) => {
@@ -40,8 +55,7 @@
                 window.currentUser = user;
                 await handleUserDoc(user);
                 updateAuthUI(true);
-                loadUserPredictions();
-                loadLeaderboard();
+                loadUserDashboardData();
             } else {
                 window.currentUser = null;
                 window.userData = null;
@@ -60,16 +74,42 @@
                     uid: user.uid,
                     email: user.email,
                     displayName: user.displayName || 'Trader',
-                    balance: 100,
+                    balance: 100, // Real withdrawable tokens
+                    bonusBalance: 0, // Referral bonus tokens (non-withdrawable)
                     referredBy: refBy && refBy !== user.uid ? refBy : null,
+                    hasMadePrediction: false,
                     createdAt: serverTimestamp()
                 };
                 await setDoc(userRef, window.userData);
+
+                // If referred by someone, record referral relationship
+                if (window.userData.referredBy) {
+                    await addDoc(collection(db, "referrals"), {
+                        uplinerUid: window.userData.referredBy,
+                        referredUid: user.uid,
+                        referredName: user.displayName || 'Trader',
+                        referredEmail: user.email,
+                        hasPredicted: false,
+                        tokensEarned: 0,
+                        createdAt: serverTimestamp()
+                    });
+                }
             } else {
                 window.userData = userSnap.data();
             }
-            document.getElementById('user-balance').textContent = `${window.userData.balance} Predikto`;
+            updateBalanceUI();
             document.getElementById('referral-link').value = `https://${window.location.hostname}${window.location.pathname}?ref=${user.uid}`;
+            loadUserReferrals();
+        }
+
+        function updateBalanceUI() {
+            if (!window.userData) return;
+            const totalTokens = window.userData.balance + window.userData.bonusBalance;
+            const usdValue = (window.userData.balance / 100).toFixed(2);
+            document.getElementById('user-balance').textContent = `${totalTokens} Tokens ($${usdValue})`;
+            document.getElementById('dash-balance').textContent = `${window.userData.balance}`;
+            document.getElementById('dash-usd').textContent = `$${usdValue}`;
+            document.getElementById('dash-bonus').textContent = `${window.userData.bonusBalance}`;
         }
 
         function updateAuthUI(isLoggedIn) {
@@ -105,7 +145,7 @@
             router('home');
         }
 
-        // Realtime Live Predictions Table for Homepage
+        // Realtime Homepage Live Stream
         function initHomeLivePredictionsTable() {
             const q = query(collection(db, "predictions"), orderBy("createdAt", "desc"), limit(10));
             onSnapshot(q, (snapshot) => {
@@ -123,7 +163,6 @@
                     predictions.push({ id: docSnap.id, ...docSnap.data() });
                 });
 
-                // Calculate rank positions based on proximity to live BTC price
                 let ranked = [...predictions].sort((a, b) => {
                     const diffA = Math.abs(a.predictedPrice - (window.currentBtcPrice || a.predictedPrice));
                     const diffB = Math.abs(b.predictedPrice - (window.currentBtcPrice || b.predictedPrice));
@@ -140,32 +179,34 @@
                     let formattedDate = "Just now";
                     if (p.createdAt && p.createdAt.toDate) {
                         const dateObj = p.createdAt.toDate();
-                        const day = String(dateObj.getDate()).padStart(2, '0');
-                        const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-                        const year = dateObj.getFullYear();
-                        const hours = String(dateObj.getHours()).padStart(2, '0');
+                        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                        const m = months[dateObj.getMonth()];
+                        const d = String(dateObj.getDate()).padStart(2, '0');
+                        const y = dateObj.getFullYear();
+                        let hours = dateObj.getHours();
                         const mins = String(dateObj.getMinutes()).padStart(2, '0');
-                        formattedDate = `${day}.${month}.${year} ${hours}:${mins}`;
+                        const secs = String(dateObj.getSeconds()).padStart(2, '0');
+                        const ampm = hours >= 12 ? 'PM' : 'AM';
+                        hours = hours % 12 || 12;
+                        formattedDate = `${m}-${d}-${y} ${String(hours).padStart(2,'0')}:${mins}:${secs} ${ampm}`;
                     }
 
                     tbody.innerHTML += `
                         <tr class="hover:bg-gray-800/40 transition border-b border-gray-800/60">
                             <td class="p-4"><span class="w-7 h-7 rounded-lg bg-gray-800 inline-flex items-center justify-center font-bold text-emerald-400 text-xs">#${rankIndex}</span></td>
                             <td class="p-4 font-bold text-white">${p.userName || 'Anonymous Trader'}</td>
-                            <td class="p-4 font-bold text-emerald-400">${p.drawId || 'Draw #1'}</td>
+                            <td class="p-4 font-bold text-emerald-400">Draw #${p.drawId || '1'}</td>
                             <td class="p-4 font-mono font-bold text-white">$${p.predictedPrice.toLocaleString()}</td>
                             <td class="p-4 font-mono font-bold ${diffColor}">${diffFormatted}</td>
-                            <td class="p-4 text-gray-400 text-xs">${formattedDate}</td>
+                            <td class="p-4 text-gray-400 text-xs font-mono">${formattedDate}</td>
                         </tr>
                     `;
                 });
-            }, (error) => {
-                console.error("Home live predictions snapshot error:", error);
             });
         }
         initHomeLivePredictionsTable();
 
-        // Multi-Prediction System Handler
+        // Multi-Prediction System Handler for Draw #1
         window.placeMultiplePredictions = async function() {
             if (!window.currentUser) {
                 alert("Please sign in first to place predictions!");
@@ -188,24 +229,78 @@
             }
 
             const totalCost = predictionsToSubmit.length * 10;
+            const totalAvailable = window.userData.balance + window.userData.bonusBalance;
 
-            if (window.userData.balance < totalCost) {
-                alert(`Insufficient balance! Total cost for ${predictionsToSubmit.length} predictions is ${totalCost} Predikto tokens.`);
+            if (totalAvailable < totalCost) {
+                alert(`Insufficient balance! Total cost for ${predictionsToSubmit.length} predictions is ${totalCost} tokens.`);
                 return;
             }
 
             try {
-                window.userData.balance -= totalCost;
-                const userRef = doc(db, "users", window.currentUser.uid);
-                await updateDoc(userRef, { balance: window.userData.balance });
-                document.getElementById('user-balance').textContent = `${window.userData.balance} Predikto`;
+                // Deduct bonus balance first, then real balance
+                let costRemaining = totalCost;
+                let userRef = doc(db, "users", window.currentUser.uid);
 
-                const drawId = "Draw #1";
+                if (window.userData.bonusBalance >= costRemaining) {
+                    window.userData.bonusBalance -= costRemaining;
+                    costRemaining = 0;
+                } else {
+                    costRemaining -= window.userData.bonusBalance;
+                    window.userData.bonusBalance = 0;
+                    window.userData.balance -= costRemaining;
+                }
+
+                await updateDoc(userRef, { 
+                    balance: window.userData.balance, 
+                    bonusBalance: window.userData.bonusBalance,
+                    hasMadePrediction: true 
+                });
+
+                updateBalanceUI();
+
+                // Check if first prediction and trigger referral reward & upliner 10% logic
+                if (!window.userData.hasMadePrediction && window.userData.referredBy) {
+                    window.userData.hasMadePrediction = true;
+                    // Find referral document and update upliner
+                    const refQuery = query(collection(db, "referrals"), where("referredUid", "==", window.currentUser.uid));
+                    const refSnap = await getDocs(refQuery);
+                    refSnap.forEach(async (refDocSnap) => {
+                        await updateDoc(doc(db, "referrals", refDocSnap.id), { hasPredicted: true });
+                        // Add 100 bonus tokens to upliner
+                        const uplinerRef = doc(db, "users", window.userData.referredBy);
+                        const uplinerSnap = await getDoc(uplinerRef);
+                        if (uplinerSnap.exists()) {
+                            await updateDoc(uplinerRef, { bonusBalance: increment(100) });
+                        }
+                    });
+                }
+
+                // Update Draw stats
+                const drawRef = doc(db, "draws", window.currentDrawId);
+                const drawSnap = await getDoc(drawRef);
+                let currentPoolTokens = totalCost;
+                let currentTotalPreds = predictionsToSubmit.length;
+
+                if (!drawSnap.exists()) {
+                    await setDoc(drawRef, {
+                        drawId: window.currentDrawId,
+                        totalPredictions: currentTotalPreds,
+                        totalTokens: currentPoolTokens,
+                        updatedAt: serverTimestamp()
+                    });
+                } else {
+                    await updateDoc(drawRef, {
+                        totalPredictions: increment(currentTotalPreds),
+                        totalTokens: increment(currentPoolTokens),
+                        updatedAt: serverTimestamp()
+                    });
+                }
+
                 for (let price of predictionsToSubmit) {
                     await addDoc(collection(db, "predictions"), {
                         userId: window.currentUser.uid,
                         userName: window.currentUser.displayName,
-                        drawId: drawId,
+                        drawId: window.currentDrawId,
                         asset: "BTC",
                         predictedPrice: price,
                         stake: 10,
@@ -214,108 +309,183 @@
                     });
                 }
 
-                alert(`Successfully placed ${predictionsToSubmit.length} predictions!`);
+                alert(`Successfully placed ${predictionsToSubmit.length} predictions for Draw #${window.currentDrawId}!`);
                 inputs.forEach(inp => inp.value = '');
-                router('mypredictions');
-                loadUserPredictions();
-                loadLeaderboard();
+                router('dashboard');
+                loadUserDashboardData();
             } catch (err) {
                 console.error(err);
                 alert("Error submitting predictions.");
             }
         }
 
-        // Load User Predictions with Realtime Diff calculation
-        window.loadUserPredictions = async function() {
+        // Load Dashboard Data & Top 10 Live Draw Predictions
+        window.loadUserDashboardData = async function() {
             if (!window.currentUser) return;
-            const q = query(collection(db, "predictions"), where("userId", "==", window.currentUser.uid));
-            const querySnapshot = await getDocs(q);
-            const tbody = document.getElementById('my-predictions-tbody');
+
+            // 1. Load user predictions
+            const qUser = query(collection(db, "predictions"), where("userId", "==", window.currentUser.uid), orderBy("createdAt", "desc"));
+            const querySnapshot = await getDocs(qUser);
+            const tbody = document.getElementById('dashboard-my-preds');
             tbody.innerHTML = '';
 
+            let userPredCount = querySnapshot.size;
+            document.getElementById('dash-total-preds').textContent = userPredCount;
+
             if (querySnapshot.empty) {
-                tbody.innerHTML = `<tr><td colspan="6" class="p-8 text-center text-gray-500">No predictions found yet. Start predicting!</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-gray-500">No predictions made yet.</td></tr>`;
+            } else {
+                querySnapshot.forEach((docSnap) => {
+                    const p = docSnap.data();
+                    const predPrice = p.predictedPrice;
+                    const livePrice = window.currentBtcPrice || predPrice;
+                    const diff = predPrice - livePrice;
+                    const diffFormatted = (diff >= 0 ? "+" : "") + diff.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                    const diffColor = diff === 0 ? "text-gray-400" : (diff > 0 ? "text-emerald-400" : "text-rose-400");
+
+                    let formattedDate = "Just now";
+                    if (p.createdAt && p.createdAt.toDate) {
+                        const dateObj = p.createdAt.toDate();
+                        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                        const m = months[dateObj.getMonth()];
+                        const d = String(dateObj.getDate()).padStart(2, '0');
+                        const y = dateObj.getFullYear();
+                        let hours = dateObj.getHours();
+                        const mins = String(dateObj.getMinutes()).padStart(2, '0');
+                        const secs = String(dateObj.getSeconds()).padStart(2, '0');
+                        const ampm = hours >= 12 ? 'PM' : 'AM';
+                        hours = hours % 12 || 12;
+                        formattedDate = `${m}-${d}-${y} ${String(hours).padStart(2,'0')}:${mins}:${secs} ${ampm}`;
+                    }
+
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-gray-800/40 transition border-b border-gray-800/60">
+                            <td class="p-4 font-bold text-white">#${p.drawId || '1'}</td>
+                            <td class="p-4 font-mono text-emerald-400 font-bold">$${predPrice.toLocaleString()}</td>
+                            <td class="p-4 font-mono font-bold ${diffColor}">${diffFormatted}</td>
+                            <td class="p-4 text-gray-300">${p.stake} Tokens</td>
+                            <td class="p-4 text-gray-400 text-xs font-mono">${formattedDate}</td>
+                        </tr>
+                    `;
+                });
+            }
+
+            // 2. Load Draw Pool Stats
+            const drawSnap = await getDoc(doc(db, "draws", window.currentDrawId));
+            let totalDrawTokens = 1000; // default pool base
+            if (drawSnap.exists()) {
+                totalDrawTokens = drawSnap.data().totalTokens || 1000;
+            }
+            document.getElementById('dash-draw-tokens').textContent = `${totalDrawTokens} Tokens`;
+
+            // 3. Load All Live Predictions for Draw Top 10 Table
+            const qAll = query(collection(db, "predictions"), where("drawId", "==", window.currentDrawId));
+            const allSnap = await getDocs(qAll);
+            const liveTableBody = document.getElementById('live-draw-tbody');
+            liveTableBody.innerHTML = '';
+
+            if (allSnap.empty) {
+                liveTableBody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-gray-500">No predictions in current draw.</td></tr>`;
+                document.getElementById('top1-winner-name').textContent = "Waiting for entries...";
+                document.getElementById('top1-prize').textContent = "$0.00";
                 return;
             }
 
-            querySnapshot.forEach((docSnap) => {
-                const p = docSnap.data();
-                const predPrice = p.predictedPrice;
-                const livePrice = window.currentBtcPrice || predPrice;
-                const diff = predPrice - livePrice;
+            let allItems = [];
+            allSnap.forEach(d => allItems.push(d.data()));
+
+            allItems.sort((a, b) => {
+                const diffA = Math.abs(a.predictedPrice - (window.currentBtcPrice || a.predictedPrice));
+                const diffB = Math.abs(b.predictedPrice - (window.currentBtcPrice || b.predictedPrice));
+                return diffA - diffB;
+            });
+
+            // Take Top 10
+            let top10 = allItems.slice(0, 10);
+
+            top10.forEach((p, idx) => {
+                const rank = idx + 1;
+                const livePrice = window.currentBtcPrice || p.predictedPrice;
+                const diff = p.predictedPrice - livePrice;
                 const diffFormatted = (diff >= 0 ? "+" : "") + diff.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
                 const diffColor = diff === 0 ? "text-gray-400" : (diff > 0 ? "text-emerald-400" : "text-rose-400");
 
                 let formattedDate = "Just now";
                 if (p.createdAt && p.createdAt.toDate) {
                     const dateObj = p.createdAt.toDate();
-                    const day = String(dateObj.getDate()).padStart(2, '0');
-                    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-                    const year = dateObj.getFullYear();
-                    const hours = String(dateObj.getHours()).padStart(2, '0');
+                    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                    const m = months[dateObj.getMonth()];
+                    const d = String(dateObj.getDate()).padStart(2, '0');
+                    const y = dateObj.getFullYear();
+                    let hours = dateObj.getHours();
                     const mins = String(dateObj.getMinutes()).padStart(2, '0');
-                    formattedDate = `${day}.${month}.${year} ${hours}:${mins}`;
+                    const secs = String(dateObj.getSeconds()).padStart(2, '0');
+                    const ampm = hours >= 12 ? 'PM' : 'AM';
+                    hours = hours % 12 || 12;
+                    formattedDate = `${m}-${d}-${y} ${String(hours).padStart(2,'0')}:${mins}:${secs} ${ampm}`;
                 }
 
-                tbody.innerHTML += `
+                const percentage = window.prizePercentages[rank] || 0;
+                const prizeTokens = Math.floor(totalDrawTokens * percentage);
+                const prizeUsd = (prizeTokens / 100).toFixed(2);
+
+                if (rank === 1) {
+                    document.getElementById('top1-winner-name').textContent = p.userName || 'Trader';
+                    document.getElementById('top1-prize').textContent = `${prizeTokens} Tokens ($${prizeUsd})`;
+                }
+
+                liveTableBody.innerHTML += `
                     <tr class="hover:bg-gray-800/40 transition border-b border-gray-800/60">
-                        <td class="p-4 font-bold text-white">${p.drawId || 'Draw #1'}</td>
-                        <td class="p-4 font-mono text-emerald-400 font-bold">$${predPrice.toLocaleString()}</td>
-                        <td class="p-4 text-gray-300">${p.stake} Predikto</td>
-                        <td class="p-4 font-mono text-gray-200">$${livePrice.toLocaleString()}</td>
+                        <td class="p-4 font-bold text-emerald-400">#${rank}</td>
+                        <td class="p-4 font-bold text-white">${p.userName || 'Trader'}</td>
+                        <td class="p-4 font-mono font-bold text-white">$${p.predictedPrice.toLocaleString()}</td>
                         <td class="p-4 font-mono font-bold ${diffColor}">${diffFormatted}</td>
-                        <td class="p-4 text-gray-400 text-xs">${formattedDate}</td>
+                        <td class="p-4 text-gray-400 text-xs font-mono">${formattedDate}</td>
+                        <td class="p-4 font-mono font-bold text-emerald-400">${prizeTokens} Tokens ($${prizeUsd})</td>
                     </tr>
                 `;
             });
         }
 
-        // Leaderboard: Realtime active predictions across all users
-        window.loadLeaderboard = async function() {
-            try {
-                const querySnapshot = await getDocs(collection(db, "predictions"));
-                const container = document.getElementById('leaderboard-list');
-                container.innerHTML = '';
+        // Load Referrals Page Data
+        window.loadUserReferrals = async function() {
+            if (!window.currentUser) return;
+            const qRef = query(collection(db, "referrals"), where("uplinerUid", "==", window.currentUser.uid));
+            const snap = await getDocs(qRef);
+            const tbody = document.getElementById('referral-tbody');
+            tbody.innerHTML = '';
 
-                if (querySnapshot.empty) {
-                    container.innerHTML = `<div class="p-6 text-center text-gray-500">No active predictions in the current draw yet.</div>`;
-                    return;
-                }
+            let totalRefs = snap.size;
+            let activeRefs = 0;
 
-                let items = [];
-                querySnapshot.forEach(docSnap => {
-                    items.push(docSnap.data());
-                });
+            if (snap.empty) {
+                tbody.innerHTML = `<tr><td colspan="4" class="p-6 text-center text-gray-500">No referrals yet. Share your link!</td></tr>`;
+            } else {
+                snap.forEach(docSnap => {
+                    const r = docSnap.data();
+                    if (r.hasPredicted) activeRefs++;
 
-                items.sort((a, b) => {
-                    const diffA = Math.abs(a.predictedPrice - (window.currentBtcPrice || a.predictedPrice));
-                    const diffB = Math.abs(b.predictedPrice - (window.currentBtcPrice || b.predictedPrice));
-                    return diffA - diffB;
-                });
+                    let formattedDate = "Recent";
+                    if (r.createdAt && r.createdAt.toDate) {
+                        const dateObj = r.createdAt.toDate();
+                        formattedDate = `${dateObj.getDate()}.${dateObj.getMonth()+1}.${dateObj.getFullYear()}`;
+                    }
 
-                items.forEach((p, idx) => {
-                    const diff = p.predictedPrice - (window.currentBtcPrice || p.predictedPrice);
-                    const diffFormatted = (diff >= 0 ? "+" : "") + diff.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-                    
-                    container.innerHTML += `
-                        <div class="flex items-center justify-between p-4 bg-[#0b0e14] border border-gray-800/80 rounded-2xl hover:border-gray-700 transition">
-                            <div class="flex items-center space-x-4">
-                                <span class="w-8 h-8 rounded-xl bg-gray-800 flex items-center justify-center font-bold text-emerald-400 text-sm">#${idx + 1}</span>
-                                <div>
-                                    <div class="font-bold text-white">${p.userName || 'Anonymous Trader'}</div>
-                                    <div class="text-xs text-gray-400">Draw: ${p.drawId || 'Draw #1'} | Asset: ${p.asset}</div>
-                                </div>
-                            </div>
-                            <div class="text-right">
-                                <div class="font-mono text-emerald-400 font-bold">$${p.predictedPrice.toLocaleString()}</div>
-                                <div class="text-xs font-mono text-gray-400">Offset: ${diffFormatted}</div>
-                            </div>
-                        </div>
+                    tbody.innerHTML += `
+                        <tr class="hover:bg-gray-800/40 transition border-b border-gray-800/60">
+                            <td class="p-4 font-bold text-white">${r.referredName}</td>
+                            <td class="p-4 text-gray-300">${formattedDate}</td>
+                            <td class="p-4"><span class="px-2 py-1 rounded text-xs font-semibold ${r.hasPredicted ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}">${r.hasPredicted ? 'Active' : 'Pending'}</span></td>
+                            <td class="p-4 font-mono text-emerald-400 font-bold">${r.hasPredicted ? '100 Tokens' : '0 Tokens'}</td>
+                        </tr>
                     `;
                 });
-            } catch (e) {
-                console.error("Leaderboard load error:", e);
             }
+
+            document.getElementById('dash-total-refs').textContent = totalRefs;
+            document.getElementById('dash-active-refs').textContent = activeRefs;
+            document.getElementById('ref-page-total').textContent = totalRefs;
+            document.getElementById('ref-page-active').textContent = activeRefs;
         }
     </script>
 
@@ -340,9 +510,9 @@
 
             <nav class="hidden md:flex items-center space-x-2 text-sm font-semibold">
                 <button onclick="router('home')" class="nav-link px-4 py-2.5 rounded-xl hover:bg-gray-800/60 transition text-emerald-400 bg-gray-800/40" data-page="home">Home</button>
-                <button onclick="router('draw')" class="nav-link px-4 py-2.5 rounded-xl hover:bg-gray-800/60 transition text-gray-400" data-page="draw">Draw & Predictions</button>
-                <button onclick="router('mypredictions')" class="nav-link px-4 py-2.5 rounded-xl hover:bg-gray-800/60 transition text-gray-400" data-page="mypredictions">My Predictions</button>
-                <button onclick="router('leaderboard')" class="nav-link px-4 py-2.5 rounded-xl hover:bg-gray-800/60 transition text-gray-400" data-page="leaderboard">Live Leaderboard</button>
+                <button onclick="router('dashboard')" class="nav-link px-4 py-2.5 rounded-xl hover:bg-gray-800/60 transition text-gray-400" data-page="dashboard">Dashboard</button>
+                <button onclick="router('referrals')" class="nav-link px-4 py-2.5 rounded-xl hover:bg-gray-800/60 transition text-gray-400" data-page="referrals">Referrals</button>
+                <button onclick="router('earn')" class="nav-link px-4 py-2.5 rounded-xl hover:bg-gray-800/60 transition text-gray-400" data-page="earn">Earn More</button>
             </nav>
 
             <div class="flex items-center space-x-4">
@@ -361,36 +531,31 @@
     <!-- Main Content Container -->
     <main class="flex-grow max-w-7xl w-full mx-auto px-4 py-10">
         
-        <!-- Home Page -->
+        <!-- HOME PAGE -->
         <div id="page-home" class="page-view space-y-16">
-            
-            <!-- Hero Section with Live BTC Card -->
             <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
                 <div class="lg:col-span-7 space-y-6">
                     <div class="inline-flex items-center space-x-2 bg-emerald-500/10 border border-emerald-500/20 px-4 py-1.5 rounded-full text-emerald-400 text-xs font-bold">
                         <i class="fa-solid fa-gift"></i>
-                        <span>Get 100 Free Predikto Tokens on Sign Up</span>
+                        <span>Get 100 Free Tokens ($1.00) on Sign Up</span>
                     </div>
                     <h1 class="text-4xl md:text-6xl font-black tracking-tight leading-tight text-white">
-                        Predict Bitcoin Price. <br><span class="text-emerald-400">Zero Risk. Pure Skill.</span>
+                        Predict Bitcoin Price. <br><span class="text-emerald-400">Real Rewards & PayPal Payouts.</span>
                     </h1>
                     <p class="text-gray-400 text-lg font-normal leading-relaxed">
-                        Compete in real-time Bitcoin price draws using internal tokens. Submit predictions, track live market offsets, earn referral bonuses, and top the global leaderboard.
+                        100 tokens = $1.00 USD. Minimum PayPal withdrawal at 1,000 tokens ($10). Compete in Draw #1 with zero financial risk.
                     </p>
                     <div class="flex flex-wrap gap-4 pt-2">
-                        <button onclick="router('draw')" class="bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold px-8 py-4 rounded-2xl shadow-xl shadow-emerald-500/20 transition flex items-center space-x-3">
-                            <span>Place Prediction Now</span>
+                        <button onclick="router('dashboard')" class="bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold px-8 py-4 rounded-2xl shadow-xl shadow-emerald-500/20 transition flex items-center space-x-3">
+                            <span>Open Dashboard</span>
                             <i class="fa-solid fa-arrow-right"></i>
-                        </button>
-                        <button onclick="router('leaderboard')" class="bg-gray-800 hover:bg-gray-700 text-gray-200 font-bold px-8 py-4 rounded-2xl border border-gray-700 transition">
-                            View Live Leaderboard
                         </button>
                     </div>
                 </div>
 
                 <!-- Featured BTC Live Asset Card -->
                 <div class="lg:col-span-5">
-                    <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl p-8 shadow-2xl relative overflow-hidden space-y-6">
+                    <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl p-8 shadow-2xl space-y-6">
                         <div class="flex justify-between items-center">
                             <div class="flex items-center space-x-3">
                                 <div class="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-500 font-black text-2xl">
@@ -410,40 +575,12 @@
                         </div>
 
                         <div class="pt-2 border-t border-gray-800/80 flex justify-between items-center text-xs">
-                            <span class="text-gray-400">Entry Stake: <strong class="text-white">10 Predikto</strong></span>
-                            <button onclick="router('draw')" class="text-emerald-400 font-bold hover:underline flex items-center space-x-1">
-                                <span>Enter Draw #1</span>
+                            <span class="text-gray-400">Entry Stake: <strong class="text-white">10 Tokens ($0.10)</strong></span>
+                            <button onclick="router('dashboard')" class="text-emerald-400 font-bold hover:underline flex items-center space-x-1">
+                                <span>Go to Dashboard</span>
                                 <i class="fa-solid fa-chevron-right text-xs"></i>
                             </button>
                         </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- How It Works (3 Steps) -->
-            <div class="space-y-8">
-                <div class="text-center space-y-2">
-                    <h2 class="text-3xl font-black tracking-tight text-white">How PREDIKTO Works</h2>
-                    <p class="text-gray-400 text-sm max-w-xl mx-auto">Start predicting in three simple steps without depositing any real money.</p>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div class="bg-[#0b0e14] border border-gray-800/80 p-8 rounded-3xl space-y-4 shadow-xl">
-                        <div class="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-400 font-bold text-xl flex items-center justify-center">1</div>
-                        <h3 class="font-bold text-lg text-white">Sign Up & Claim 100 Tokens</h3>
-                        <p class="text-gray-400 text-sm">Create an account with Google in seconds. Receive 100 free Predikto tokens immediately upon registration.</p>
-                    </div>
-
-                    <div class="bg-[#0b0e14] border border-gray-800/80 p-8 rounded-3xl space-y-4 shadow-xl">
-                        <div class="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-400 font-bold text-xl flex items-center justify-center">2</div>
-                        <h3 class="font-bold text-lg text-white">Submit Multiple Predictions</h3>
-                        <p class="text-gray-400 text-sm">Enter your target BTC prices for Draw #1. Submit single or multi-slot entries for 10 tokens each.</p>
-                    </div>
-
-                    <div class="bg-[#0b0e14] border border-gray-800/80 p-8 rounded-3xl space-y-4 shadow-xl">
-                        <div class="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-400 font-bold text-xl flex items-center justify-center">3</div>
-                        <h3 class="font-bold text-lg text-white">Track & Win Rewards</h3>
-                        <p class="text-gray-400 text-sm">Watch live price offsets update in real-time, invite friends for 100 token referral rewards, and top the leaderboard.</p>
                     </div>
                 </div>
             </div>
@@ -455,7 +592,6 @@
                         <h2 class="text-2xl font-black tracking-tight text-white">Realtime Predictions Stream</h2>
                         <p class="text-gray-400 text-xs">Live predictions submitted across the platform ranked by current proximity to live BTC price.</p>
                     </div>
-                    <button onclick="router('leaderboard')" class="text-xs text-emerald-400 font-bold hover:underline">Full Leaderboard</button>
                 </div>
 
                 <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl overflow-hidden shadow-2xl">
@@ -478,165 +614,236 @@
                     </div>
                 </div>
             </div>
-
-            <!-- Referral Banner -->
-            <div class="bg-gradient-to-r from-emerald-500/10 via-[#0b0e14] to-[#0b0e14] border border-emerald-500/20 p-8 rounded-3xl flex flex-col md:flex-row items-center justify-between gap-6">
-                <div class="space-y-2">
-                    <span class="text-xs font-bold text-emerald-400 uppercase tracking-wider">Referral Program</span>
-                    <h3 class="text-2xl font-black text-white">Earn 100 Free Tokens Per Referral</h3>
-                    <p class="text-gray-400 text-sm max-w-xl">Share your unique link with friends. Whenever a referred friend signs up and submits their first prediction, you automatically receive 100 Predikto tokens.</p>
-                </div>
-                <button onclick="router('mypredictions')" class="bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold px-6 py-3.5 rounded-2xl shadow-lg transition whitespace-nowrap">
-                    Get My Referral Link
-                </button>
-            </div>
-
-            <!-- FAQ Section -->
-            <div class="space-y-8 pt-6">
-                <div class="text-center space-y-2">
-                    <h2 class="text-3xl font-black tracking-tight text-white">Frequently Asked Questions</h2>
-                    <p class="text-gray-400 text-sm">Everything you need to know about PREDIKTO.</p>
-                </div>
-
-                <div class="max-w-3xl mx-auto space-y-4">
-                    <div class="bg-[#0b0e14] border border-gray-800/80 p-6 rounded-2xl space-y-2">
-                        <h4 class="font-bold text-white">Is real money required to play?</h4>
-                        <p class="text-gray-400 text-sm">No. PREDIKTO is a free social betting platform using internal tokens called Predikto. You receive 100 free tokens upon registration and can earn more via referrals.</p>
-                    </div>
-
-                    <div class="bg-[#0b0e14] border border-gray-800/80 p-6 rounded-2xl space-y-2">
-                        <h4 class="font-bold text-white">How is the live Bitcoin price determined?</h4>
-                        <p class="text-gray-400 text-sm">The live price is fetched continuously from public Binance market data feeds, ensuring transparent real-time offset calculations.</p>
-                    </div>
-
-                    <div class="bg-[#0b0e14] border border-gray-800/80 p-6 rounded-2xl space-y-2">
-                        <h4 class="font-bold text-white">How does the multi-prediction feature work?</h4>
-                        <p class="text-gray-400 text-sm">You can submit multiple target price predictions for Draw #1 simultaneously. Each prediction costs 10 Predikto tokens from your balance.</p>
-                    </div>
-
-                    <div class="bg-[#0b0e14] border border-gray-800/80 p-6 rounded-2xl space-y-2">
-                        <h4 class="font-bold text-white">How do I earn referral tokens?</h4>
-                        <p class="text-gray-400 text-sm">Copy your unique referral link from the "My Predictions" tab. When a new user registers through your link and places their first prediction, 100 bonus tokens are credited to your balance.</p>
-                    </div>
-                </div>
-            </div>
-
         </div>
 
-        <!-- Draw & Multi-Predictions Page -->
-        <div id="page-draw" class="page-view hidden space-y-8">
-            <div class="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-gray-800/80 pb-6 gap-4">
-                <div>
-                    <h1 class="text-3xl font-black tracking-tight text-white">Draw #1 & Predictions</h1>
-                    <p class="text-gray-400 text-sm">Submit multiple price predictions simultaneously. Cost: 10 Predikto tokens per prediction.</p>
+        <!-- DASHBOARD PAGE -->
+        <div id="page-dashboard" class="page-view hidden space-y-8">
+            <div class="border-b border-gray-800/80 pb-6">
+                <h1 class="text-3xl font-black tracking-tight text-white">Trader Dashboard</h1>
+                <p class="text-gray-400 text-sm">Manage your token balances, submit multi-slot predictions for Draw #1, and track real-time standings.</p>
+            </div>
+
+            <!-- Widgets Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <!-- Balance Widget -->
+                <div class="bg-[#0b0e14] border border-gray-800/90 p-6 rounded-3xl space-y-3 shadow-xl">
+                    <div class="text-xs text-gray-400 font-medium">Account Balance</div>
+                    <div class="flex items-baseline space-x-2">
+                        <span id="dash-balance" class="text-3xl font-black font-mono text-white">0</span>
+                        <span class="text-xs text-emerald-400 font-bold">Tokens</span>
+                    </div>
+                    <div class="text-xs text-gray-400">USD Value: <strong id="dash-usd" class="text-emerald-400">$0.00</strong> ($1 = 100 tokens)</div>
+                    <div class="text-xs text-gray-400 pt-2 border-t border-gray-800">Bonus Balance: <strong id="dash-bonus" class="text-amber-400">0</strong> tokens (Non-withdrawable)</div>
                 </div>
-                <div class="bg-[#0b0e14] border border-gray-800/80 px-5 py-3 rounded-2xl flex items-center space-x-3">
-                    <span class="text-xs text-gray-400 font-medium">Available Balance:</span>
-                    <span id="user-balance" class="font-mono font-bold text-emerald-400 text-base">0 Predikto</span>
+
+                <!-- Referrals Widget -->
+                <div class="bg-[#0b0e14] border border-gray-800/90 p-6 rounded-3xl space-y-3 shadow-xl">
+                    <div class="text-xs text-gray-400 font-medium">Referral Stats</div>
+                    <div class="flex space-x-6">
+                        <div>
+                            <div id="dash-total-refs" class="text-2xl font-black font-mono text-white">0</div>
+                            <div class="text-xs text-gray-400">Total Referrals</div>
+                        </div>
+                        <div>
+                            <div id="dash-active-refs" class="text-2xl font-black font-mono text-emerald-400">0</div>
+                            <div class="text-xs text-gray-400">Active Referrals</div>
+                        </div>
+                    </div>
+                    <button onclick="router('referrals')" class="text-xs text-emerald-400 font-bold hover:underline pt-1 block">View Referral Details &rarr;</button>
+                </div>
+
+                <!-- Predictions Stats Widget -->
+                <div class="bg-[#0b0e14] border border-gray-800/90 p-6 rounded-3xl space-y-3 shadow-xl">
+                    <div class="text-xs text-gray-400 font-medium">Draw #1 Activity</div>
+                    <div class="flex space-x-6">
+                        <div>
+                            <div id="dash-total-preds" class="text-2xl font-black font-mono text-white">0</div>
+                            <div class="text-xs text-gray-400">My Predictions</div>
+                        </div>
+                        <div>
+                            <div id="dash-draw-tokens" class="text-xl font-black font-mono text-emerald-400">0</div>
+                            <div class="text-xs text-gray-400">Draw Pool Tokens</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Realtime BTC Price Widget -->
+                <div class="bg-[#0b0e14] border border-gray-800/90 p-6 rounded-3xl space-y-3 shadow-xl">
+                    <div class="text-xs text-gray-400 font-medium">Bitcoin Realtime Price</div>
+                    <div id="dash-btc-price" class="text-2xl font-black font-mono text-emerald-400">Loading...</div>
+                    <div id="dash-btc-time" class="text-xs text-gray-400 font-mono">--</div>
                 </div>
             </div>
 
-            <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl p-8 space-y-6 max-w-2xl shadow-xl">
-                <div class="flex justify-between items-center">
-                    <h3 class="font-bold text-lg text-white">BTC/USDT Price Predictions</h3>
-                    <span class="text-xs bg-emerald-500/10 text-emerald-400 px-3 py-1 rounded-full font-semibold">Draw #1</span>
-                </div>
-                
-                <div id="prediction-inputs-container" class="space-y-4">
-                    <div class="flex items-center space-x-3">
-                        <div class="relative flex-grow">
-                            <span class="absolute inset-y-0 left-0 pl-4 flex items-center text-gray-500 font-mono">$</span>
-                            <input type="number" placeholder="Enter target BTC price" class="prediction-input w-full bg-[#05080e] border border-gray-800/80 focus:border-emerald-500 rounded-2xl pl-8 pr-4 py-3.5 text-white font-mono font-bold outline-none transition">
-                        </div>
-                        <span class="text-xs text-gray-500 font-semibold w-20 text-right">10 Tokens</span>
+            <!-- Multi-Prediction Input (Left) & My Predictions Table (Right) -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                <!-- Input Section -->
+                <div class="lg:col-span-5 bg-[#0b0e14] border border-gray-800/90 rounded-3xl p-8 space-y-6 shadow-xl">
+                    <div class="flex justify-between items-center">
+                        <h3 class="font-bold text-lg text-white">Submit Predictions</h3>
+                        <span class="text-xs bg-emerald-500/10 text-emerald-400 px-3 py-1 rounded-full font-semibold">Draw #1</span>
                     </div>
-                    <div class="flex items-center space-x-3">
-                        <div class="relative flex-grow">
-                            <span class="absolute inset-y-0 left-0 pl-4 flex items-center text-gray-500 font-mono">$</span>
-                            <input type="number" placeholder="Enter target BTC price" class="prediction-input w-full bg-[#05080e] border border-gray-800/80 focus:border-emerald-500 rounded-2xl pl-8 pr-4 py-3.5 text-white font-mono font-bold outline-none transition">
+                    
+                    <div id="prediction-inputs-container" class="space-y-4">
+                        <div class="flex items-center space-x-3">
+                            <div class="relative flex-grow">
+                                <span class="absolute inset-y-0 left-0 pl-4 flex items-center text-gray-500 font-mono">$</span>
+                                <input type="number" placeholder="Target BTC price" class="prediction-input w-full bg-[#05080e] border border-gray-800/80 focus:border-emerald-500 rounded-2xl pl-8 pr-4 py-3 text-white font-mono font-bold outline-none transition">
+                            </div>
+                            <span class="text-xs text-gray-500 font-semibold w-16 text-right">10 Tok</span>
                         </div>
-                        <span class="text-xs text-gray-500 font-semibold w-20 text-right">10 Tokens</span>
-                    </div>
-                    <div class="flex items-center space-x-3">
-                        <div class="relative flex-grow">
-                            <span class="absolute inset-y-0 left-0 pl-4 flex items-center text-gray-500 font-mono">$</span>
-                            <input type="number" placeholder="Enter target BTC price" class="prediction-input w-full bg-[#05080e] border border-gray-800/80 focus:border-emerald-500 rounded-2xl pl-8 pr-4 py-3.5 text-white font-mono font-bold outline-none transition">
+                        <div class="flex items-center space-x-3">
+                            <div class="relative flex-grow">
+                                <span class="absolute inset-y-0 left-0 pl-4 flex items-center text-gray-500 font-mono">$</span>
+                                <input type="number" placeholder="Target BTC price" class="prediction-input w-full bg-[#05080e] border border-gray-800/80 focus:border-emerald-500 rounded-2xl pl-8 pr-4 py-3 text-white font-mono font-bold outline-none transition">
+                            </div>
+                            <span class="text-xs text-gray-500 font-semibold w-16 text-right">10 Tok</span>
                         </div>
-                        <span class="text-xs text-gray-500 font-semibold w-20 text-right">10 Tokens</span>
                     </div>
-                </div>
 
-                <div class="flex justify-between items-center pt-2">
-                    <button onclick="addPredictionInput()" class="text-xs text-emerald-400 font-bold hover:text-emerald-300 transition flex items-center space-x-1.5">
-                        <i class="fa-solid fa-plus"></i>
-                        <span>Add Another Prediction Slot</span>
+                    <div class="flex justify-between items-center pt-2">
+                        <button onclick="addPredictionInput()" class="text-xs text-emerald-400 font-bold hover:text-emerald-300 transition flex items-center space-x-1.5">
+                            <i class="fa-solid fa-plus"></i>
+                            <span>Add Prediction Slot</span>
+                        </button>
+                    </div>
+
+                    <button onclick="placeMultiplePredictions()" class="w-full bg-emerald-500 hover:bg-emerald-400 text-black font-black py-3.5 rounded-2xl shadow-xl shadow-emerald-500/20 transition text-sm">
+                        Submit Predictions (10 Tokens Each)
                     </button>
                 </div>
 
-                <button onclick="placeMultiplePredictions()" class="w-full bg-emerald-500 hover:bg-emerald-400 text-black font-black py-4 rounded-2xl shadow-xl shadow-emerald-500/20 transition text-base">
-                    Submit All Predictions
-                </button>
-            </div>
-        </div>
-
-        <!-- My Predictions Page -->
-        <div id="page-mypredictions" class="page-view hidden space-y-8">
-            <div class="border-b border-gray-800/80 pb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <div>
-                    <h1 class="text-3xl font-black tracking-tight text-white">My Predictions & Referral Program</h1>
-                    <p class="text-gray-400 text-sm">Real-time tracking of your active bets compared against live BTC market prices.</p>
+                <!-- My Predictions History Table -->
+                <div class="lg:col-span-7 bg-[#0b0e14] border border-gray-800/90 rounded-3xl overflow-hidden shadow-xl flex flex-col">
+                    <div class="p-6 border-b border-gray-800/80">
+                        <h3 class="font-bold text-lg text-white">My Predictions History</h3>
+                    </div>
+                    <div class="overflow-x-auto flex-grow">
+                        <table class="w-full text-left text-sm">
+                            <thead class="bg-gray-900/90 text-gray-400 border-b border-gray-800 uppercase text-xs tracking-wider font-mono">
+                                <tr>
+                                    <th class="p-4">Draw ID</th>
+                                    <th class="p-4">Prediction</th>
+                                    <th class="p-4">Difference</th>
+                                    <th class="p-4">Stake</th>
+                                    <th class="p-4">Date</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dashboard-my-preds" class="divide-y divide-gray-800/60 text-gray-300">
+                                <tr><td colspan="5" class="p-6 text-center text-gray-500">Please sign in to view your predictions.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
 
-            <!-- Referral Card -->
-            <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl p-8 space-y-4 shadow-xl">
-                <h3 class="font-bold text-lg flex items-center space-x-2 text-white">
-                    <i class="fa-solid fa-users text-emerald-400"></i>
-                    <span>Your Unique Referral Link</span>
-                </h3>
-                <p class="text-xs text-gray-400">Earn 100 Predikto bonus tokens when your invited friend places their first prediction.</p>
+            <!-- Draw #1 Live Top 10 & Potential Prize Widget -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 pt-4">
+                <!-- Top 10 Table (Left) -->
+                <div class="lg:col-span-8 bg-[#0b0e14] border border-gray-800/90 rounded-3xl overflow-hidden shadow-xl">
+                    <div class="p-6 border-b border-gray-800/80 flex justify-between items-center">
+                        <div>
+                            <h3 class="font-bold text-lg text-white">Draw #1 - Live Top 10 Standings</h3>
+                            <p class="text-xs text-gray-400">Top positions and calculated prize distributions based on pool tokens.</p>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm">
+                            <thead class="bg-gray-900/90 text-gray-400 border-b border-gray-800 uppercase text-xs tracking-wider font-mono">
+                                <tr>
+                                    <th class="p-4">Position</th>
+                                    <th class="p-4">Username</th>
+                                    <th class="p-4">Prediction</th>
+                                    <th class="p-4">Difference</th>
+                                    <th class="p-4">Date</th>
+                                    <th class="p-4">Prize Pool Share</th>
+                                </tr>
+                            </thead>
+                            <tbody id="live-draw-tbody" class="divide-y divide-gray-800/60 text-gray-300">
+                                <tr><td colspan="6" class="p-8 text-center text-gray-500">Loading standings...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Right Widget (Live BTC & #1 Potential Win) -->
+                <div class="lg:col-span-4 space-y-6">
+                    <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl p-6 shadow-xl space-y-4">
+                        <h4 class="font-bold text-white text-sm uppercase tracking-wider">Draw #1 Leader</h4>
+                        <div class="space-y-2">
+                            <div class="text-xs text-gray-400">Current #1 Position Holder:</div>
+                            <div id="top1-winner-name" class="text-xl font-black text-emerald-400">Waiting for entries...</div>
+                        </div>
+                        <div class="space-y-2 pt-2 border-t border-gray-800">
+                            <div class="text-xs text-gray-400">Potential Prize at 1st Place (27%):</div>
+                            <div id="top1-prize" class="text-2xl font-black font-mono text-white">$0.00</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- REFERRALS PAGE -->
+        <div id="page-referrals" class="page-view hidden space-y-8">
+            <div class="border-b border-gray-800/80 pb-6">
+                <h1 class="text-3xl font-black tracking-tight text-white">Referral Program</h1>
+                <p class="text-gray-400 text-sm">Invite friends, earn bonus tokens for predictions, and receive 10% upliner rewards when they win.</p>
+            </div>
+
+            <!-- Referral Link Card -->
+            <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl p-8 space-y-4 shadow-xl max-w-2xl">
+                <h3 class="font-bold text-lg text-white">Your Unique Referral Link</h3>
+                <p class="text-xs text-gray-400">Earn 100 bonus tokens when your invited friend makes their first prediction (bonus tokens can be used for predictions, non-withdrawable).</p>
                 <div class="flex space-x-3">
                     <input type="text" id="referral-link" readonly class="w-full bg-[#05080e] border border-gray-800/80 rounded-2xl px-4 py-3 text-sm text-gray-300 font-mono outline-none" value="Sign in to generate link">
                     <button onclick="copyRefLink()" class="bg-emerald-500 hover:bg-emerald-400 text-black font-bold px-6 rounded-2xl text-sm transition">Copy</button>
                 </div>
             </div>
 
-            <!-- Predictions Table -->
-            <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl overflow-hidden shadow-2xl">
+            <!-- Referrals Stats Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-2xl">
+                <div class="bg-[#0b0e14] border border-gray-800/90 p-6 rounded-3xl space-y-2">
+                    <div class="text-xs text-gray-400">Total Referrals</div>
+                    <div id="ref-page-total" class="text-3xl font-black text-white font-mono">0</div>
+                </div>
+                <div class="bg-[#0b0e14] border border-gray-800/90 p-6 rounded-3xl space-y-2">
+                    <div class="text-xs text-gray-400">Active Referrals (Made Prediction)</div>
+                    <div id="ref-page-active" class="text-3xl font-black text-emerald-400 font-mono">0</div>
+                </div>
+            </div>
+
+            <!-- Referrals Table -->
+            <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl overflow-hidden shadow-xl max-w-4xl">
                 <div class="p-6 border-b border-gray-800/80">
-                    <h3 class="font-bold text-lg text-white">Prediction History & Realtime Performance</h3>
+                    <h3 class="font-bold text-lg text-white">Referred Users List</h3>
                 </div>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left text-sm">
                         <thead class="bg-gray-900/90 text-gray-400 border-b border-gray-800 uppercase text-xs tracking-wider font-mono">
                             <tr>
-                                <th class="p-4">Draw ID</th>
-                                <th class="p-4">Prediction</th>
-                                <th class="p-4">Stake</th>
-                                <th class="p-4">Realtime Price</th>
-                                <th class="p-4">Difference</th>
-                                <th class="p-4">Time</th>
+                                <th class="p-4">Username</th>
+                                <th class="p-4">Registration Date</th>
+                                <th class="p-4">Status</th>
+                                <th class="p-4">Bonus Earned</th>
                             </tr>
                         </thead>
-                        <tbody id="my-predictions-tbody" class="divide-y divide-gray-800/60 text-gray-300">
-                            <tr><td colspan="6" class="p-8 text-center text-gray-500">Please sign in to view your predictions.</td></tr>
+                        <tbody id="referral-tbody" class="divide-y divide-gray-800/60 text-gray-300">
+                            <tr><td colspan="4" class="p-6 text-center text-gray-500">Please sign in to view referrals.</td></tr>
                         </tbody>
                     </table>
                 </div>
             </div>
         </div>
 
-        <!-- Leaderboard Page -->
-        <div id="page-leaderboard" class="page-view hidden space-y-8">
+        <!-- EARN MORE PAGE -->
+        <div id="page-earn" class="page-view hidden space-y-8">
             <div class="border-b border-gray-800/80 pb-6">
-                <h1 class="text-3xl font-black tracking-tight text-white">Live Leaderboard</h1>
-                <p class="text-gray-400 text-sm">Real-time ranking of all active predictions in Draw #1, sorted by proximity to the live BTC price.</p>
+                <h1 class="text-3xl font-black tracking-tight text-white">Earn More Tokens</h1>
+                <p class="text-gray-400 text-sm">Discover additional ways to boost your token balance.</p>
             </div>
-            
-            <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl p-6 shadow-2xl">
-                <div id="leaderboard-list" class="space-y-3">
-                    <div class="p-8 text-center text-gray-500">Loading active predictions...</div>
-                </div>
+            <div class="bg-[#0b0e14] border border-gray-800/95 rounded-3xl p-8 max-w-xl space-y-4 shadow-xl">
+                <h3 class="font-bold text-white text-lg">More Earning Methods Coming Soon</h3>
+                <p class="text-gray-400 text-sm">Stay tuned for upcoming promotional tasks, daily login rewards, and community events.</p>
             </div>
         </div>
     </main>
@@ -651,8 +858,8 @@
             </div>
             <div class="flex space-x-6">
                 <button onclick="router('home')" class="hover:text-gray-300 transition">Home</button>
-                <button onclick="router('draw')" class="hover:text-gray-300 transition">Predictions</button>
-                <button onclick="router('leaderboard')" class="hover:text-gray-300 transition">Leaderboard</button>
+                <button onclick="router('dashboard')" class="hover:text-gray-300 transition">Dashboard</button>
+                <button onclick="router('referrals')" class="hover:text-gray-300 transition">Referrals</button>
             </div>
         </div>
     </footer>
@@ -672,11 +879,11 @@
                 }
             });
 
-            if(pageId === 'leaderboard') {
-                loadLeaderboard();
+            if(pageId === 'dashboard') {
+                loadUserDashboardData();
             }
-            if(pageId === 'mypredictions') {
-                loadUserPredictions();
+            if(pageId === 'referrals') {
+                loadUserReferrals();
             }
 
             window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -689,7 +896,7 @@
             div.innerHTML = `
                 <div class="relative flex-grow">
                     <span class="absolute inset-y-0 left-0 pl-4 flex items-center text-gray-500 font-mono">$</span>
-                    <input type="number" placeholder="Enter target BTC price" class="prediction-input w-full bg-[#05080e] border border-gray-800/80 focus:border-emerald-500 rounded-2xl pl-8 pr-4 py-3.5 text-white font-mono font-bold outline-none transition">
+                    <input type="number" placeholder="Target BTC price" class="prediction-input w-full bg-[#05080e] border border-gray-800/80 focus:border-emerald-500 rounded-2xl pl-8 pr-4 py-3 text-white font-mono font-bold outline-none transition">
                 </div>
                 <button onclick="this.parentElement.remove()" class="text-rose-400 hover:text-rose-300 px-3 py-2 text-sm"><i class="fa-solid fa-trash"></i></button>
             `;
@@ -709,6 +916,22 @@
                 }
                 if (document.getElementById('hero-btc-price')) {
                     document.getElementById('hero-btc-price').textContent = priceFormatted;
+                }
+                if (document.getElementById('dash-btc-price')) {
+                    document.getElementById('dash-btc-price').textContent = priceFormatted;
+                }
+                if (document.getElementById('dash-btc-time')) {
+                    const now = new Date();
+                    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                    const m = months[now.getMonth()];
+                    const d = String(now.getDate()).padStart(2, '0');
+                    const y = now.getFullYear();
+                    let hours = now.getHours();
+                    const mins = String(now.getMinutes()).padStart(2, '0');
+                    const secs = String(now.getSeconds()).padStart(2, '0');
+                    const ampm = hours >= 12 ? 'PM' : 'AM';
+                    hours = hours % 12 || 12;
+                    document.getElementById('dash-btc-time').textContent = `${m}-${d}-${y} ${String(hours).padStart(2,'0')}:${mins}:${secs} ${ampm}`;
                 }
             } catch (e) {
                 window.currentBtcPrice = 67842.00;
