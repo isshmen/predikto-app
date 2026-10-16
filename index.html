@@ -35,18 +35,9 @@
         window.currentBtcPrice = 0;
         window.currentDrawId = "1";
 
-        // Prize distribution percentages
         window.prizePercentages = {
-            1: 0.27,
-            2: 0.162,
-            3: 0.108,
-            4: 0.081,
-            5: 0.063,
-            6: 0.054,
-            7: 0.049,
-            8: 0.044,
-            9: 0.039,
-            10: 0.030
+            1: 0.27, 2: 0.162, 3: 0.108, 4: 0.081, 5: 0.063,
+            6: 0.054, 7: 0.049, 8: 0.044, 9: 0.039, 10: 0.030
         };
 
         // Auth State Listener
@@ -74,15 +65,15 @@
                     uid: user.uid,
                     email: user.email,
                     displayName: user.displayName || 'Trader',
-                    balance: 100, // Real withdrawable tokens
-                    bonusBalance: 0, // Referral bonus tokens (non-withdrawable)
+                    balance: 100,
+                    bonusBalance: 0,
+                    usedVouchers: [],
                     referredBy: refBy && refBy !== user.uid ? refBy : null,
                     hasMadePrediction: false,
                     createdAt: serverTimestamp()
                 };
                 await setDoc(userRef, window.userData);
 
-                // If referred by someone, record referral relationship
                 if (window.userData.referredBy) {
                     await addDoc(collection(db, "referrals"), {
                         uplinerUid: window.userData.referredBy,
@@ -96,28 +87,48 @@
                 }
             } else {
                 window.userData = userSnap.data();
+                if (!window.userData.usedVouchers) {
+                    window.userData.usedVouchers = [];
+                }
             }
             updateBalanceUI();
-            document.getElementById('referral-link').value = `https://${window.location.hostname}${window.location.pathname}?ref=${user.uid}`;
+            updateReferralLinks();
             loadUserReferrals();
         }
 
         function updateBalanceUI() {
             if (!window.userData) return;
             const totalTokens = window.userData.balance + window.userData.bonusBalance;
-            const usdValue = (window.userData.balance / 100).toFixed(2);
-            document.getElementById('user-balance').textContent = `${totalTokens} Tokens ($${usdValue})`;
-            document.getElementById('dash-balance').textContent = `${window.userData.balance}`;
-            document.getElementById('dash-usd').textContent = `$${usdValue}`;
-            document.getElementById('dash-bonus').textContent = `${window.userData.bonusBalance}`;
+            const headerBalanceEl = document.getElementById('user-balance');
+            if (headerBalanceEl) {
+                headerBalanceEl.textContent = `${totalTokens} Predikto`;
+            }
+            const dashBalEl = document.getElementById('dash-balance');
+            if (dashBalEl) {
+                dashBalEl.textContent = `${window.userData.balance}`;
+            }
+            const dashBonusEl = document.getElementById('dash-bonus');
+            if (dashBonusEl) {
+                dashBonusEl.textContent = `${window.userData.bonusBalance}`;
+            }
+        }
+
+        function updateReferralLinks() {
+            if (!window.currentUser) return;
+            const link = `https://${window.location.hostname}${window.location.pathname}?ref=${window.currentUser.uid}`;
+            const refInputs = document.querySelectorAll('.referral-link-input');
+            refInputs.forEach(input => {
+                input.value = link;
+            });
         }
 
         function updateAuthUI(isLoggedIn) {
             const container = document.getElementById('auth-container');
             if (isLoggedIn) {
+                const name = window.currentUser.displayName || window.currentUser.email || 'Trader';
                 container.innerHTML = `
                     <div class="flex items-center space-x-3 bg-[#0d121d] border border-gray-800/80 px-4 py-2 rounded-2xl">
-                        <span class="text-xs text-emerald-400 font-bold hidden sm:inline">${window.currentUser.displayName}</span>
+                        <span class="text-xs text-emerald-400 font-bold">${name}</span>
                         <button onclick="logout()" class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded-xl text-xs font-semibold transition">Logout</button>
                     </div>
                 `;
@@ -143,6 +154,60 @@
         window.logout = async function() {
             await signOut(auth);
             router('home');
+        }
+
+        // Voucher Redemption Logic
+        window.redeemVoucher = async function() {
+            if (!window.currentUser) {
+                alert("Please sign in first to redeem vouchers!");
+                return;
+            }
+            const inputEl = document.getElementById('voucher-code-input');
+            const code = inputEl.value.trim().toUpperCase();
+            if (!code) {
+                alert("Please enter a voucher code.");
+                return;
+            }
+
+            try {
+                const voucherRef = doc(db, "vouchers", code);
+                const voucherSnap = await getDoc(voucherRef);
+
+                if (!voucherSnap.exists()) {
+                    alert("Invalid voucher code.");
+                    return;
+                }
+
+                const voucherData = voucherSnap.data();
+
+                if (!voucherData.active) {
+                    alert("This voucher code is no longer active.");
+                    return;
+                }
+
+                if (window.userData.usedVouchers && window.userData.usedVouchers.includes(code)) {
+                    alert("You have already redeemed this voucher code.");
+                    return;
+                }
+
+                const tokenReward = voucherData.tokens || 0;
+                window.userData.bonusBalance += tokenReward;
+                if (!window.userData.usedVouchers) window.userData.usedVouchers = [];
+                window.userData.usedVouchers.push(code);
+
+                const userRef = doc(db, "users", window.currentUser.uid);
+                await updateDoc(userRef, {
+                    bonusBalance: window.userData.bonusBalance,
+                    usedVouchers: window.userData.usedVouchers
+                });
+
+                updateBalanceUI();
+                inputEl.value = '';
+                alert(`Voucher redeemed successfully! You received ${tokenReward} Bonus Tokens.`);
+            } catch (err) {
+                console.error("Voucher redemption error:", err);
+                alert("Error redeeming voucher code.");
+            }
         }
 
         // Realtime Homepage Live Stream
@@ -206,7 +271,7 @@
         }
         initHomeLivePredictionsTable();
 
-        // Multi-Prediction System Handler for Draw #1
+        // Multi-Prediction System Handler
         window.placeMultiplePredictions = async function() {
             if (!window.currentUser) {
                 alert("Please sign in first to place predictions!");
@@ -237,7 +302,6 @@
             }
 
             try {
-                // Deduct bonus balance first, then real balance
                 let costRemaining = totalCost;
                 let userRef = doc(db, "users", window.currentUser.uid);
 
@@ -258,15 +322,12 @@
 
                 updateBalanceUI();
 
-                // Check if first prediction and trigger referral reward & upliner 10% logic
                 if (!window.userData.hasMadePrediction && window.userData.referredBy) {
                     window.userData.hasMadePrediction = true;
-                    // Find referral document and update upliner
                     const refQuery = query(collection(db, "referrals"), where("referredUid", "==", window.currentUser.uid));
                     const refSnap = await getDocs(refQuery);
                     refSnap.forEach(async (refDocSnap) => {
                         await updateDoc(doc(db, "referrals", refDocSnap.id), { hasPredicted: true });
-                        // Add 100 bonus tokens to upliner
                         const uplinerRef = doc(db, "users", window.userData.referredBy);
                         const uplinerSnap = await getDoc(uplinerRef);
                         if (uplinerSnap.exists()) {
@@ -275,7 +336,6 @@
                     });
                 }
 
-                // Update Draw stats
                 const drawRef = doc(db, "draws", window.currentDrawId);
                 const drawSnap = await getDoc(drawRef);
                 let currentPoolTokens = totalCost;
@@ -323,23 +383,92 @@
         window.loadUserDashboardData = async function() {
             if (!window.currentUser) return;
 
-            // 1. Load user predictions
             const qUser = query(collection(db, "predictions"), where("userId", "==", window.currentUser.uid), orderBy("createdAt", "desc"));
             const querySnapshot = await getDocs(qUser);
             const tbody = document.getElementById('dashboard-my-preds');
-            tbody.innerHTML = '';
+            if (tbody) {
+                tbody.innerHTML = '';
+                let userPredCount = querySnapshot.size;
+                const dashTotalPredsEl = document.getElementById('dash-total-preds');
+                if (dashTotalPredsEl) dashTotalPredsEl.textContent = userPredCount;
 
-            let userPredCount = querySnapshot.size;
-            document.getElementById('dash-total-preds').textContent = userPredCount;
+                if (querySnapshot.empty) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-gray-500">No predictions made yet.</td></tr>`;
+                } else {
+                    querySnapshot.forEach((docSnap) => {
+                        const p = docSnap.data();
+                        const predPrice = p.predictedPrice;
+                        const livePrice = window.currentBtcPrice || predPrice;
+                        const diff = predPrice - livePrice;
+                        const diffFormatted = (diff >= 0 ? "+" : "") + diff.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                        const diffColor = diff === 0 ? "text-gray-400" : (diff > 0 ? "text-emerald-400" : "text-rose-400");
 
-            if (querySnapshot.empty) {
-                tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-gray-500">No predictions made yet.</td></tr>`;
-            } else {
-                querySnapshot.forEach((docSnap) => {
-                    const p = docSnap.data();
-                    const predPrice = p.predictedPrice;
-                    const livePrice = window.currentBtcPrice || predPrice;
-                    const diff = predPrice - livePrice;
+                        let formattedDate = "Just now";
+                        if (p.createdAt && p.createdAt.toDate) {
+                            const dateObj = p.createdAt.toDate();
+                            const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                            const m = months[dateObj.getMonth()];
+                            const d = String(dateObj.getDate()).padStart(2, '0');
+                            const y = dateObj.getFullYear();
+                            let hours = dateObj.getHours();
+                            const mins = String(dateObj.getMinutes()).padStart(2, '0');
+                            const secs = String(dateObj.getSeconds()).padStart(2, '0');
+                            const ampm = hours >= 12 ? 'PM' : 'AM';
+                            hours = hours % 12 || 12;
+                            formattedDate = `${m}-${d}-${y} ${String(hours).padStart(2,'0')}:${mins}:${secs} ${ampm}`;
+                        }
+
+                        tbody.innerHTML += `
+                            <tr class="hover:bg-gray-800/40 transition border-b border-gray-800/60">
+                                <td class="p-4 font-bold text-white">#${p.drawId || '1'}</td>
+                                <td class="p-4 font-mono text-emerald-400 font-bold">$${predPrice.toLocaleString()}</td>
+                                <td class="p-4 font-mono font-bold ${diffColor}">${diffFormatted}</td>
+                                <td class="p-4 text-gray-300">${p.stake} Tokens</td>
+                                <td class="p-4 text-gray-400 text-xs font-mono">${formattedDate}</td>
+                            </tr>
+                        `;
+                    });
+                }
+            }
+
+            const drawSnap = await getDoc(doc(db, "draws", window.currentDrawId));
+            let totalDrawTokens = 1000;
+            if (drawSnap.exists()) {
+                totalDrawTokens = drawSnap.data().totalTokens || 1000;
+            }
+            const drawTokensEl = document.getElementById('dash-draw-tokens');
+            if (drawTokensEl) drawTokensEl.textContent = `${totalDrawTokens} Tokens`;
+
+            const qAll = query(collection(db, "predictions"), where("drawId", "==", window.currentDrawId));
+            const allSnap = await getDocs(qAll);
+            const liveTableBody = document.getElementById('live-draw-tbody');
+            if (liveTableBody) {
+                liveTableBody.innerHTML = '';
+
+                if (allSnap.empty) {
+                    liveTableBody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-gray-500">No predictions in current draw.</td></tr>`;
+                    const winnerNameEl = document.getElementById('top1-winner-name');
+                    if (winnerNameEl) winnerNameEl.textContent = "Waiting for entries...";
+                    const winnerPrizeEl = document.getElementById('top1-prize');
+                    if (winnerPrizeEl) winnerPrizeEl.textContent = "0 Tokens";
+                    return;
+                }
+
+                let allItems = [];
+                allSnap.forEach(d => allItems.push(d.data()));
+
+                allItems.sort((a, b) => {
+                    const diffA = Math.abs(a.predictedPrice - (window.currentBtcPrice || a.predictedPrice));
+                    const diffB = Math.abs(b.predictedPrice - (window.currentBtcPrice || b.predictedPrice));
+                    return diffA - diffB;
+                });
+
+                let top10 = allItems.slice(0, 10);
+
+                top10.forEach((p, idx) => {
+                    const rank = idx + 1;
+                    const livePrice = window.currentBtcPrice || p.predictedPrice;
+                    const diff = p.predictedPrice - livePrice;
                     const diffFormatted = (diff >= 0 ? "+" : "") + diff.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
                     const diffColor = diff === 0 ? "text-gray-400" : (diff > 0 ? "text-emerald-400" : "text-rose-400");
 
@@ -358,93 +487,28 @@
                         formattedDate = `${m}-${d}-${y} ${String(hours).padStart(2,'0')}:${mins}:${secs} ${ampm}`;
                     }
 
-                    tbody.innerHTML += `
+                    const percentage = window.prizePercentages[rank] || 0;
+                    const prizeTokens = Math.floor(totalDrawTokens * percentage);
+
+                    if (rank === 1) {
+                        const winnerNameEl = document.getElementById('top1-winner-name');
+                        if (winnerNameEl) winnerNameEl.textContent = p.userName || 'Trader';
+                        const winnerPrizeEl = document.getElementById('top1-prize');
+                        if (winnerPrizeEl) winnerPrizeEl.textContent = `${prizeTokens} Tokens`;
+                    }
+
+                    liveTableBody.innerHTML += `
                         <tr class="hover:bg-gray-800/40 transition border-b border-gray-800/60">
-                            <td class="p-4 font-bold text-white">#${p.drawId || '1'}</td>
-                            <td class="p-4 font-mono text-emerald-400 font-bold">$${predPrice.toLocaleString()}</td>
+                            <td class="p-4 font-bold text-emerald-400">#${rank}</td>
+                            <td class="p-4 font-bold text-white">${p.userName || 'Trader'}</td>
+                            <td class="p-4 font-mono font-bold text-white">$${p.predictedPrice.toLocaleString()}</td>
                             <td class="p-4 font-mono font-bold ${diffColor}">${diffFormatted}</td>
-                            <td class="p-4 text-gray-300">${p.stake} Tokens</td>
                             <td class="p-4 text-gray-400 text-xs font-mono">${formattedDate}</td>
+                            <td class="p-4 font-mono font-bold text-emerald-400">${prizeTokens} Tokens</td>
                         </tr>
                     `;
                 });
             }
-
-            // 2. Load Draw Pool Stats
-            const drawSnap = await getDoc(doc(db, "draws", window.currentDrawId));
-            let totalDrawTokens = 1000; // default pool base
-            if (drawSnap.exists()) {
-                totalDrawTokens = drawSnap.data().totalTokens || 1000;
-            }
-            document.getElementById('dash-draw-tokens').textContent = `${totalDrawTokens} Tokens`;
-
-            // 3. Load All Live Predictions for Draw Top 10 Table
-            const qAll = query(collection(db, "predictions"), where("drawId", "==", window.currentDrawId));
-            const allSnap = await getDocs(qAll);
-            const liveTableBody = document.getElementById('live-draw-tbody');
-            liveTableBody.innerHTML = '';
-
-            if (allSnap.empty) {
-                liveTableBody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-gray-500">No predictions in current draw.</td></tr>`;
-                document.getElementById('top1-winner-name').textContent = "Waiting for entries...";
-                document.getElementById('top1-prize').textContent = "$0.00";
-                return;
-            }
-
-            let allItems = [];
-            allSnap.forEach(d => allItems.push(d.data()));
-
-            allItems.sort((a, b) => {
-                const diffA = Math.abs(a.predictedPrice - (window.currentBtcPrice || a.predictedPrice));
-                const diffB = Math.abs(b.predictedPrice - (window.currentBtcPrice || b.predictedPrice));
-                return diffA - diffB;
-            });
-
-            // Take Top 10
-            let top10 = allItems.slice(0, 10);
-
-            top10.forEach((p, idx) => {
-                const rank = idx + 1;
-                const livePrice = window.currentBtcPrice || p.predictedPrice;
-                const diff = p.predictedPrice - livePrice;
-                const diffFormatted = (diff >= 0 ? "+" : "") + diff.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-                const diffColor = diff === 0 ? "text-gray-400" : (diff > 0 ? "text-emerald-400" : "text-rose-400");
-
-                let formattedDate = "Just now";
-                if (p.createdAt && p.createdAt.toDate) {
-                    const dateObj = p.createdAt.toDate();
-                    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-                    const m = months[dateObj.getMonth()];
-                    const d = String(dateObj.getDate()).padStart(2, '0');
-                    const y = dateObj.getFullYear();
-                    let hours = dateObj.getHours();
-                    const mins = String(dateObj.getMinutes()).padStart(2, '0');
-                    const secs = String(dateObj.getSeconds()).padStart(2, '0');
-                    const ampm = hours >= 12 ? 'PM' : 'AM';
-                    hours = hours % 12 || 12;
-                    formattedDate = `${m}-${d}-${y} ${String(hours).padStart(2,'0')}:${mins}:${secs} ${ampm}`;
-                }
-
-                const percentage = window.prizePercentages[rank] || 0;
-                const prizeTokens = Math.floor(totalDrawTokens * percentage);
-                const prizeUsd = (prizeTokens / 100).toFixed(2);
-
-                if (rank === 1) {
-                    document.getElementById('top1-winner-name').textContent = p.userName || 'Trader';
-                    document.getElementById('top1-prize').textContent = `${prizeTokens} Tokens ($${prizeUsd})`;
-                }
-
-                liveTableBody.innerHTML += `
-                    <tr class="hover:bg-gray-800/40 transition border-b border-gray-800/60">
-                        <td class="p-4 font-bold text-emerald-400">#${rank}</td>
-                        <td class="p-4 font-bold text-white">${p.userName || 'Trader'}</td>
-                        <td class="p-4 font-mono font-bold text-white">$${p.predictedPrice.toLocaleString()}</td>
-                        <td class="p-4 font-mono font-bold ${diffColor}">${diffFormatted}</td>
-                        <td class="p-4 text-gray-400 text-xs font-mono">${formattedDate}</td>
-                        <td class="p-4 font-mono font-bold text-emerald-400">${prizeTokens} Tokens ($${prizeUsd})</td>
-                    </tr>
-                `;
-            });
         }
 
         // Load Referrals Page Data
@@ -453,39 +517,47 @@
             const qRef = query(collection(db, "referrals"), where("uplinerUid", "==", window.currentUser.uid));
             const snap = await getDocs(qRef);
             const tbody = document.getElementById('referral-tbody');
-            tbody.innerHTML = '';
 
             let totalRefs = snap.size;
             let activeRefs = 0;
 
-            if (snap.empty) {
-                tbody.innerHTML = `<tr><td colspan="4" class="p-6 text-center text-gray-500">No referrals yet. Share your link!</td></tr>`;
+            if (tbody) {
+                tbody.innerHTML = '';
+                if (snap.empty) {
+                    tbody.innerHTML = `<tr><td colspan="4" class="p-6 text-center text-gray-500">No referrals yet. Share your link!</td></tr>`;
+                } else {
+                    snap.forEach(docSnap => {
+                        const r = docSnap.data();
+                        if (r.hasPredicted) activeRefs++;
+
+                        let formattedDate = "Recent";
+                        if (r.createdAt && r.createdAt.toDate) {
+                            const dateObj = r.createdAt.toDate();
+                            formattedDate = `${dateObj.getDate()}.${dateObj.getMonth()+1}.${dateObj.getFullYear()}`;
+                        }
+
+                        tbody.innerHTML += `
+                            <tr class="hover:bg-gray-800/40 transition border-b border-gray-800/60">
+                                <td class="p-4 font-bold text-white">${r.referredName}</td>
+                                <td class="p-4 text-gray-300">${formattedDate}</td>
+                                <td class="p-4"><span class="px-2 py-1 rounded text-xs font-semibold ${r.hasPredicted ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}">${r.hasPredicted ? 'Active' : 'Inactive'}</span></td>
+                                <td class="p-4 font-mono text-emerald-400 font-bold">${r.hasPredicted ? '100 Tokens' : '0 Tokens'}</td>
+                            </tr>
+                        `;
+                    });
+                }
             } else {
                 snap.forEach(docSnap => {
-                    const r = docSnap.data();
-                    if (r.hasPredicted) activeRefs++;
-
-                    let formattedDate = "Recent";
-                    if (r.createdAt && r.createdAt.toDate) {
-                        const dateObj = r.createdAt.toDate();
-                        formattedDate = `${dateObj.getDate()}.${dateObj.getMonth()+1}.${dateObj.getFullYear()}`;
-                    }
-
-                    tbody.innerHTML += `
-                        <tr class="hover:bg-gray-800/40 transition border-b border-gray-800/60">
-                            <td class="p-4 font-bold text-white">${r.referredName}</td>
-                            <td class="p-4 text-gray-300">${formattedDate}</td>
-                            <td class="p-4"><span class="px-2 py-1 rounded text-xs font-semibold ${r.hasPredicted ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}">${r.hasPredicted ? 'Active' : 'Pending'}</span></td>
-                            <td class="p-4 font-mono text-emerald-400 font-bold">${r.hasPredicted ? '100 Tokens' : '0 Tokens'}</td>
-                        </tr>
-                    `;
+                    if (docSnap.data().hasPredicted) activeRefs++;
                 });
             }
 
-            document.getElementById('dash-total-refs').textContent = totalRefs;
-            document.getElementById('dash-active-refs').textContent = activeRefs;
-            document.getElementById('ref-page-total').textContent = totalRefs;
-            document.getElementById('ref-page-active').textContent = activeRefs;
+            const dashTotalRefEl = document.getElementById('dash-total-refs');
+            if (dashTotalRefEl) dashTotalRefEl.textContent = totalRefs;
+            const refPageTotalEl = document.getElementById('ref-page-total');
+            if (refPageTotalEl) refPageTotalEl.textContent = totalRefs;
+            const refPageActiveEl = document.getElementById('ref-page-active');
+            if (refPageActiveEl) refPageActiveEl.textContent = activeRefs;
         }
     </script>
 
@@ -521,8 +593,15 @@
                     <span class="text-gray-400 font-medium">BTC Live:</span>
                     <span id="live-btc-price" class="font-mono font-bold text-white text-sm">Loading...</span>
                 </div>
+                
+                <!-- Account Balance Badge in Header -->
+                <div class="hidden md:flex items-center bg-darkcard border border-gray-800 px-4 py-2 rounded-2xl">
+                    <span class="text-xs text-gray-400 mr-2 font-medium">Balance:</span>
+                    <span id="user-balance" class="font-mono font-bold text-emerald-400 text-xs">0 Predikto</span>
+                </div>
+
                 <div id="auth-container">
-                    <!-- Dynamic Auth Button injected -->
+                    <!-- Dynamic Auth Button / Logout injected -->
                 </div>
             </div>
         </div>
@@ -533,17 +612,18 @@
         
         <!-- HOME PAGE -->
         <div id="page-home" class="page-view space-y-16">
+            <!-- Hero Section with Live BTC Card -->
             <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
                 <div class="lg:col-span-7 space-y-6">
                     <div class="inline-flex items-center space-x-2 bg-emerald-500/10 border border-emerald-500/20 px-4 py-1.5 rounded-full text-emerald-400 text-xs font-bold">
                         <i class="fa-solid fa-gift"></i>
-                        <span>Get 100 Free Tokens ($1.00) on Sign Up</span>
+                        <span>Receive 100 Free Predikto Tokens upon Registration!</span>
                     </div>
                     <h1 class="text-4xl md:text-6xl font-black tracking-tight leading-tight text-white">
-                        Predict Bitcoin Price. <br><span class="text-emerald-400">Real Rewards & PayPal Payouts.</span>
+                        Predict Bitcoin Price. <br><span class="text-emerald-400">Zero Risk. Pure Skill.</span>
                     </h1>
                     <p class="text-gray-400 text-lg font-normal leading-relaxed">
-                        100 tokens = $1.00 USD. Minimum PayPal withdrawal at 1,000 tokens ($10). Compete in Draw #1 with zero financial risk.
+                        Compete in real-time Bitcoin price draws using internal tokens. Submit predictions, track live market offsets, earn referral bonuses, and top the global leaderboard.
                     </p>
                     <div class="flex flex-wrap gap-4 pt-2">
                         <button onclick="router('dashboard')" class="bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold px-8 py-4 rounded-2xl shadow-xl shadow-emerald-500/20 transition flex items-center space-x-3">
@@ -555,7 +635,7 @@
 
                 <!-- Featured BTC Live Asset Card -->
                 <div class="lg:col-span-5">
-                    <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl p-8 shadow-2xl space-y-6">
+                    <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl p-8 shadow-2xl relative overflow-hidden space-y-6">
                         <div class="flex justify-between items-center">
                             <div class="flex items-center space-x-3">
                                 <div class="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-500 font-black text-2xl">
@@ -575,12 +655,40 @@
                         </div>
 
                         <div class="pt-2 border-t border-gray-800/80 flex justify-between items-center text-xs">
-                            <span class="text-gray-400">Entry Stake: <strong class="text-white">10 Tokens ($0.10)</strong></span>
+                            <span class="text-gray-400">Entry Stake: <strong class="text-white">10 Predikto</strong></span>
                             <button onclick="router('dashboard')" class="text-emerald-400 font-bold hover:underline flex items-center space-x-1">
                                 <span>Go to Dashboard</span>
                                 <i class="fa-solid fa-chevron-right text-xs"></i>
                             </button>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- How It Works (3 Steps) -->
+            <div class="space-y-8">
+                <div class="text-center space-y-2">
+                    <h2 class="text-3xl font-black tracking-tight text-white">How PREDIKTO Works</h2>
+                    <p class="text-gray-400 text-sm max-w-xl mx-auto">Start predicting in three simple steps without depositing any real money.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-[#0b0e14] border border-gray-800/80 p-8 rounded-3xl space-y-4 shadow-xl">
+                        <div class="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-400 font-bold text-xl flex items-center justify-center">1</div>
+                        <h3 class="font-bold text-lg text-white">Sign Up & Claim 100 Tokens</h3>
+                        <p class="text-gray-400 text-sm">Create an account with Google in seconds. Receive 100 free Predikto tokens immediately upon registration.</p>
+                    </div>
+
+                    <div class="bg-[#0b0e14] border border-gray-800/80 p-8 rounded-3xl space-y-4 shadow-xl">
+                        <div class="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-400 font-bold text-xl flex items-center justify-center">2</div>
+                        <h3 class="font-bold text-lg text-white">Submit Multiple Predictions</h3>
+                        <p class="text-gray-400 text-sm">Enter your target BTC prices for Draw #1. Submit single or multi-slot entries for 10 tokens each.</p>
+                    </div>
+
+                    <div class="bg-[#0b0e14] border border-gray-800/80 p-8 rounded-3xl space-y-4 shadow-xl">
+                        <div class="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-400 font-bold text-xl flex items-center justify-center">3</div>
+                        <h3 class="font-bold text-lg text-white">Track & Win Rewards</h3>
+                        <p class="text-gray-400 text-sm">Watch live price offsets update in real-time, invite friends for 100 token referral rewards, and top the leaderboard.</p>
                     </div>
                 </div>
             </div>
@@ -614,6 +722,48 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Referral Banner -->
+            <div class="bg-gradient-to-r from-emerald-500/10 via-[#0b0e14] to-[#0b0e14] border border-emerald-500/20 p-8 rounded-3xl flex flex-col md:flex-row items-center justify-between gap-6">
+                <div class="space-y-2">
+                    <span class="text-xs font-bold text-emerald-400 uppercase tracking-wider">Referral Program</span>
+                    <h3 class="text-2xl font-black text-white">Earn 100 Free Bonus Tokens Per Referral</h3>
+                    <p class="text-gray-400 text-sm max-w-xl">Share your unique link with friends. Whenever a referred friend signs up and submits their first prediction, you automatically receive 100 Predikto bonus tokens.</p>
+                </div>
+                <button onclick="router('referrals')" class="bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold px-6 py-3.5 rounded-2xl shadow-lg transition whitespace-nowrap">
+                    Get My Referral Link
+                </button>
+            </div>
+
+            <!-- FAQ Section -->
+            <div class="space-y-8 pt-6">
+                <div class="text-center space-y-2">
+                    <h2 class="text-3xl font-black tracking-tight text-white">Frequently Asked Questions</h2>
+                    <p class="text-gray-400 text-sm">Everything you need to know about PREDIKTO.</p>
+                </div>
+
+                <div class="max-w-3xl mx-auto space-y-4">
+                    <div class="bg-[#0b0e14] border border-gray-800/80 p-6 rounded-2xl space-y-2">
+                        <h4 class="font-bold text-white">Is real money required to play?</h4>
+                        <p class="text-gray-400 text-sm">No. PREDIKTO is a free social betting platform using internal tokens called Predikto. You receive 100 free tokens upon registration and can earn more via referrals.</p>
+                    </div>
+
+                    <div class="bg-[#0b0e14] border border-gray-800/80 p-6 rounded-2xl space-y-2">
+                        <h4 class="font-bold text-white">How is the live Bitcoin price determined?</h4>
+                        <p class="text-gray-400 text-sm">The live price is fetched continuously from public Binance market data feeds, ensuring transparent real-time offset calculations.</p>
+                    </div>
+
+                    <div class="bg-[#0b0e14] border border-gray-800/80 p-6 rounded-2xl space-y-2">
+                        <h4 class="font-bold text-white">How does the multi-prediction feature work?</h4>
+                        <p class="text-gray-400 text-sm">You can submit multiple target price predictions for Draw #1 simultaneously. Each prediction costs 10 Predikto tokens from your balance.</p>
+                    </div>
+
+                    <div class="bg-[#0b0e14] border border-gray-800/80 p-6 rounded-2xl space-y-2">
+                        <h4 class="font-bold text-white">How do I earn referral tokens?</h4>
+                        <p class="text-gray-400 text-sm">Copy your unique referral link from the "Referrals" tab. When a new user registers through your link and places their first prediction, 100 bonus tokens are credited to your balance.</p>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- DASHBOARD PAGE -->
@@ -632,24 +782,20 @@
                         <span id="dash-balance" class="text-3xl font-black font-mono text-white">0</span>
                         <span class="text-xs text-emerald-400 font-bold">Tokens</span>
                     </div>
-                    <div class="text-xs text-gray-400">USD Value: <strong id="dash-usd" class="text-emerald-400">$0.00</strong> ($1 = 100 tokens)</div>
                     <div class="text-xs text-gray-400 pt-2 border-t border-gray-800">Bonus Balance: <strong id="dash-bonus" class="text-amber-400">0</strong> tokens (Non-withdrawable)</div>
+                    <button onclick="router('earn')" class="w-full bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-bold text-xs py-2 rounded-xl transition border border-emerald-500/20 mt-1">
+                        Earn More Tokens
+                    </button>
                 </div>
 
                 <!-- Referrals Widget -->
                 <div class="bg-[#0b0e14] border border-gray-800/90 p-6 rounded-3xl space-y-3 shadow-xl">
                     <div class="text-xs text-gray-400 font-medium">Referral Stats</div>
-                    <div class="flex space-x-6">
-                        <div>
-                            <div id="dash-total-refs" class="text-2xl font-black font-mono text-white">0</div>
-                            <div class="text-xs text-gray-400">Total Referrals</div>
-                        </div>
-                        <div>
-                            <div id="dash-active-refs" class="text-2xl font-black font-mono text-emerald-400">0</div>
-                            <div class="text-xs text-gray-400">Active Referrals</div>
-                        </div>
+                    <div>
+                        <div id="dash-total-refs" class="text-3xl font-black font-mono text-white">0</div>
+                        <div class="text-xs text-gray-400">Total Referrals</div>
                     </div>
-                    <button onclick="router('referrals')" class="text-xs text-emerald-400 font-bold hover:underline pt-1 block">View Referral Details &rarr;</button>
+                    <button onclick="router('referrals')" class="text-xs text-emerald-400 font-bold hover:underline pt-2 block">View Referral Details &rarr;</button>
                 </div>
 
                 <!-- Predictions Stats Widget -->
@@ -776,7 +922,7 @@
                         </div>
                         <div class="space-y-2 pt-2 border-t border-gray-800">
                             <div class="text-xs text-gray-400">Potential Prize at 1st Place (27%):</div>
-                            <div id="top1-prize" class="text-2xl font-black font-mono text-white">$0.00</div>
+                            <div id="top1-prize" class="text-2xl font-black font-mono text-white">0 Tokens</div>
                         </div>
                     </div>
                 </div>
@@ -795,7 +941,7 @@
                 <h3 class="font-bold text-lg text-white">Your Unique Referral Link</h3>
                 <p class="text-xs text-gray-400">Earn 100 bonus tokens when your invited friend makes their first prediction (bonus tokens can be used for predictions, non-withdrawable).</p>
                 <div class="flex space-x-3">
-                    <input type="text" id="referral-link" readonly class="w-full bg-[#05080e] border border-gray-800/80 rounded-2xl px-4 py-3 text-sm text-gray-300 font-mono outline-none" value="Sign in to generate link">
+                    <input type="text" readonly class="referral-link-input w-full bg-[#05080e] border border-gray-800/80 rounded-2xl px-4 py-3 text-sm text-gray-300 font-mono outline-none" value="Sign in to generate link">
                     <button onclick="copyRefLink()" class="bg-emerald-500 hover:bg-emerald-400 text-black font-bold px-6 rounded-2xl text-sm transition">Copy</button>
                 </div>
             </div>
@@ -839,11 +985,17 @@
         <div id="page-earn" class="page-view hidden space-y-8">
             <div class="border-b border-gray-800/80 pb-6">
                 <h1 class="text-3xl font-black tracking-tight text-white">Earn More Tokens</h1>
-                <p class="text-gray-400 text-sm">Discover additional ways to boost your token balance.</p>
+                <p class="text-gray-400 text-sm">Redeem voucher codes or complete tasks to get extra Predikto bonus tokens.</p>
             </div>
-            <div class="bg-[#0b0e14] border border-gray-800/95 rounded-3xl p-8 max-w-xl space-y-4 shadow-xl">
-                <h3 class="font-bold text-white text-lg">More Earning Methods Coming Soon</h3>
-                <p class="text-gray-400 text-sm">Stay tuned for upcoming promotional tasks, daily login rewards, and community events.</p>
+
+            <!-- Voucher Code Section -->
+            <div class="bg-[#0b0e14] border border-gray-800/90 rounded-3xl p-8 max-w-xl space-y-4 shadow-xl">
+                <h3 class="font-bold text-white text-lg">Redeem Voucher Code</h3>
+                <p class="text-xs text-gray-400">Enter a promo/voucher code to instantly claim free bonus tokens into your account.</p>
+                <div class="flex space-x-3">
+                    <input type="text" id="voucher-code-input" placeholder="e.g. WELCOME100" class="w-full bg-[#05080e] border border-gray-800/80 focus:border-emerald-500 rounded-2xl px-4 py-3 text-sm text-white font-mono uppercase outline-none transition">
+                    <button onclick="redeemVoucher()" class="bg-emerald-500 hover:bg-emerald-400 text-black font-bold px-6 rounded-2xl text-sm transition">Redeem</button>
+                </div>
             </div>
         </div>
     </main>
@@ -860,6 +1012,7 @@
                 <button onclick="router('home')" class="hover:text-gray-300 transition">Home</button>
                 <button onclick="router('dashboard')" class="hover:text-gray-300 transition">Dashboard</button>
                 <button onclick="router('referrals')" class="hover:text-gray-300 transition">Referrals</button>
+                <button onclick="router('earn')" class="hover:text-gray-300 transition">Earn More</button>
             </div>
         </div>
     </footer>
@@ -947,10 +1100,14 @@
         fetchBtcPrice();
 
         function copyRefLink() {
-            const copyText = document.getElementById("referral-link");
-            copyText.select();
-            navigator.clipboard.writeText(copyText.value);
-            alert("Referral link copied to clipboard!");
+            const copyInputs = document.querySelectorAll('.referral-link-input');
+            if (copyInputs.length > 0 && window.currentUser) {
+                const text = copyInputs[0].value;
+                navigator.clipboard.writeText(text);
+                alert("Referral link copied to clipboard!");
+            } else {
+                alert("Please sign in first to get your referral link!");
+            }
         }
     </script>
 </body>
