@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="ro" class="dark">
+<html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PREDIKTO - Social Betting & Predictions</title>
+    <title>PREDIKTO - Decentralized Prediction & Social Betting Protocol</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
@@ -11,25 +11,173 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, addTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc, getDocs, query, where, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-        // TODO: Înlocuiește cu datele tale de configurare din consola Firebase
+        // ==========================================
+        // ÎNLOCUIEȘTE ACESTE DATE CU CONFIGURAREA TA DIN FIREBASE CONSOLE
+        // ==========================================
         const firebaseConfig = {
-            apiKey: "AIzaSyDEFAULT_API_KEY_PLACEHOLDER",
+            apiKey: "AIzaSyCx5j2wkdKJsiyw4XQ5nXQFerE6Dyu_Vkc",
             authDomain: "predikto-app.firebaseapp.com",
             projectId: "predikto-app",
-            storageBucket: "predikto-app.appspot.com",
-            messagingSenderId: "123456789",
-            appId: "1:123:web:abc"
+            storageBucket: "predikto-app.firebasestorage.app",
+            messagingSenderId: "234702174386",
+            appId: "1:234702174386:web:5892569808d46ad203b1ab"
         };
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
+        const googleProvider = new GoogleAuthProvider();
 
-        window.firebaseAuth = auth;
-        window.firebaseDb = db;
-        window.googleProvider = new GoogleAuthProvider();
+        // Global State
+        window.currentUser = null;
+        window.userData = null;
+
+        // Auth State Listener
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                window.currentUser = user;
+                await handleUserDoc(user);
+                updateAuthUI(true);
+                loadUserPredictions();
+            } else {
+                window.currentUser = null;
+                window.userData = null;
+                updateAuthUI(false);
+            }
+        });
+
+        // Handle User Document & Welcome 100 Tokens + Referral
+        async function handleUserDoc(user) {
+            const userRef = doc(db, "users", user.uid);
+            const userSnap = await getDoc(userRef);
+
+            // Check URL for referral parameter (e.g. ?ref=UID)
+            const urlParams = new URLSearchParams(window.location.search);
+            const refBy = urlParams.get('ref') || null;
+
+            if (!userSnap.exists()) {
+                // New user: grant 100 Predikto tokens
+                window.userData = {
+                    uid: user.uid,
+                    email: user.email,
+                    displayName: user.displayName || 'Trader',
+                    balance: 100,
+                    referredBy: refBy && refBy !== user.uid ? refBy : null,
+                    createdAt: serverTimestamp()
+                };
+                await setDoc(userRef, window.userData);
+            } else {
+                window.userData = userSnap.data();
+            }
+            document.getElementById('user-balance').textContent = `${window.userData.balance} Predikto`;
+            document.getElementById('referral-link').value = `https://${window.location.hostname}${window.location.pathname}?ref=${user.uid}`;
+        }
+
+        function updateAuthUI(isLoggedIn) {
+            const container = document.getElementById('auth-container');
+            if (isLoggedIn) {
+                container.innerHTML = `
+                    <div class="flex items-center space-x-3">
+                        <span class="text-xs text-emerald-400 font-semibold hidden sm:inline">${window.currentUser.displayName}</span>
+                        <button onclick="logout()" class="bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-2 rounded-xl text-xs font-semibold transition">Logout</button>
+                    </div>
+                `;
+            } else {
+                container.innerHTML = `
+                    <button onclick="loginGoogle()" class="bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 text-white font-semibold px-4 py-2 rounded-xl text-sm shadow-lg shadow-emerald-500/20 transition flex items-center space-x-2">
+                        <i class="fa-brands fa-google"></i>
+                        <span>Google Sign In</span>
+                    </button>
+                `;
+            }
+        }
+
+        window.loginGoogle = async function() {
+            try {
+                await signInWithPopup(auth, googleProvider);
+            } catch (error) {
+                console.error("Auth error:", error);
+                alert("Authentication failed: " + error.message);
+            }
+        }
+
+        window.logout = async function() {
+            await signOut(auth);
+            router('home');
+        }
+
+        // Place Prediction
+        window.placePrediction = async function() {
+            if (!window.currentUser) {
+                alert("Please sign in first to place a prediction!");
+                return;
+            }
+
+            const priceInput = parseFloat(document.getElementById('pred-price').value);
+            const stakeCost = 10;
+
+            if (window.userData.balance < stakeCost) {
+                alert("Insufficient Predikto tokens! Invite friends via referral to earn more.");
+                return;
+            }
+
+            try {
+                // Deduct balance locally and in Firestore
+                window.userData.balance -= stakeCost;
+                const userRef = doc(db, "users", window.currentUser.uid);
+                await updateDoc(userRef, { balance: window.userData.balance });
+                document.getElementById('user-balance').textContent = `${window.userData.balance} Predikto`;
+
+                // Save prediction
+                await addDoc(collection(db, "predictions"), {
+                    userId: window.currentUser.uid,
+                    userName: window.currentUser.displayName,
+                    drawId: "#142",
+                    asset: "BTC",
+                    predictedPrice: priceInput,
+                    stake: stakeCost,
+                    status: "Active",
+                    result: "-",
+                    createdAt: serverTimestamp()
+                });
+
+                alert("Prediction placed successfully on-chain/database!");
+                router('mypredictions');
+                loadUserPredictions();
+            } catch (err) {
+                console.error(err);
+                alert("Error placing prediction.");
+            }
+        }
+
+        // Load User Predictions
+        async function loadUserPredictions() {
+            if (!window.currentUser) return;
+            const q = query(collection(db, "predictions"), where("userId", "==", window.currentUser.uid));
+            const querySnapshot = await getDocs(q);
+            const tbody = document.getElementById('my-predictions-tbody');
+            tbody.innerHTML = '';
+
+            if (querySnapshot.empty) {
+                tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-gray-500">No predictions found yet.</td></tr>`;
+                return;
+            }
+
+            querySnapshot.forEach((doc) => {
+                const p = doc.data();
+                tbody.innerHTML += `
+                    <tr class="hover:bg-gray-900/40 transition">
+                        <td class="p-4 font-bold">${p.drawId}</td>
+                        <td class="p-4"><span class="bg-gray-800 px-2 py-1 rounded text-xs">${p.asset}</span></td>
+                        <td class="p-4 font-mono">$${p.predictedPrice}</td>
+                        <td class="p-4">${p.stake} Predikto</td>
+                        <td class="p-4"><span class="bg-amber-500/10 text-amber-400 px-3 py-1 rounded-full text-xs font-semibold">${p.status}</span></td>
+                    </tr>
+                `;
+            });
+        }
     </script>
 
     <script>
@@ -60,8 +208,8 @@
             </div>
 
             <nav class="hidden md:flex items-center space-x-1 text-sm font-medium">
-                <button onclick="router('home')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-accent" data-page="home">Acasă</button>
-                <button onclick="router('draw')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-300" data-page="draw">Extragere & Predicții</button>
+                <button onclick="router('home')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-accent" data-page="home">Home</button>
+                <button onclick="router('draw')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-300" data-page="draw">Draw & Predictions</button>
                 <button onclick="router('mypredictions')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-300" data-page="mypredictions">My Predictions</button>
                 <button onclick="router('leaderboard')" class="nav-link px-3 py-2 rounded-lg hover:bg-gray-800 transition text-gray-300" data-page="leaderboard">Leaderboard</button>
             </nav>
@@ -70,13 +218,10 @@
                 <div class="hidden sm:flex items-center bg-gray-900 border border-gray-800 px-3 py-1.5 rounded-xl text-xs space-x-2">
                     <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                     <span class="text-gray-400">BTC Live:</span>
-                    <span id="live-btc-price" class="font-bold text-white">Se încarcă...</span>
+                    <span id="live-btc-price" class="font-bold text-white">Loading...</span>
                 </div>
                 <div id="auth-container">
-                    <button onclick="loginWithGoogle()" class="bg-gradient-to-r from-accent to-emerald-600 text-white font-semibold px-4 py-2 rounded-xl text-sm shadow-lg shadow-emerald-500/20 transition flex items-center space-x-2">
-                        <i class="fa-brands fa-google"></i>
-                        <span>Autentificare Google</span>
-                    </button>
+                    <!-- Dynamic Auth Button injected by script -->
                 </div>
             </div>
         </div>
@@ -84,21 +229,22 @@
 
     <!-- Main Content -->
     <main class="flex-grow max-w-7xl w-full mx-auto px-4 py-8">
+        
         <!-- Home Page -->
         <div id="page-home" class="page-view space-y-12">
             <div class="rounded-3xl bg-gradient-to-b from-darkcard to-gray-900 border border-gray-800 p-8 md:p-12 shadow-2xl space-y-6">
                 <div class="inline-flex items-center space-x-2 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full text-emerald-400 text-xs font-semibold">
                     <i class="fa-solid fa-gift"></i>
-                    <span>Primești 100 Tokeni Predikto gratuit la înregistrare!</span>
+                    <span>Receive 100 Free Predikto Tokens upon Registration!</span>
                 </div>
                 <h1 class="text-4xl md:text-6xl font-black tracking-tight leading-none">
-                    Predice prețul. Câștigă <span class="bg-gradient-to-r from-emerald-400 to-teal-200 bg-clip-text text-transparent">Predikto</span>.
+                    Predict the Price. Earn <span class="bg-gradient-to-r from-emerald-400 to-teal-200 bg-clip-text text-transparent">Predikto</span>.
                 </h1>
                 <p class="text-gray-400 text-base md:text-lg max-w-2xl">
-                    Platformă de predicții bazată pe tokeni interni. Fără riscuri financiare reale, concurează cu alți utilizatori și urcă în clasament.
+                    Social prediction protocol powered by internal tokens. Compete with global traders, climb leaderboards, and test your market intuition.
                 </p>
                 <button onclick="router('draw')" class="bg-emerald-500 hover:bg-emerald-600 text-darker font-bold px-8 py-4 rounded-2xl shadow-lg transition">
-                    Începe Extragerea
+                    Start Predicting
                 </button>
             </div>
         </div>
@@ -107,54 +253,109 @@
         <div id="page-draw" class="page-view hidden space-y-8">
             <div class="flex justify-between items-center border-b border-gray-800 pb-6">
                 <div>
-                    <h1 class="text-3xl font-black">Panou Predicții</h1>
-                    <p class="text-gray-400 text-sm">Folosește soldul tău de tokeni pentru a plasa predicții.</p>
+                    <h1 class="text-3xl font-black">Prediction Panel</h1>
+                    <p class="text-gray-400 text-sm">Use your internal token balance to submit predictions for active draws.</p>
                 </div>
                 <div class="bg-darkcard border border-gray-800 px-4 py-2 rounded-xl">
-                    <span class="text-xs text-gray-400">Sold:</span>
+                    <span class="text-xs text-gray-400">Balance:</span>
                     <span id="user-balance" class="font-bold text-emerald-400">0 Predikto</span>
                 </div>
             </div>
             <div class="bg-darkcard border border-gray-800 rounded-3xl p-6 space-y-4 max-w-xl">
-                <label class="text-sm font-medium">Preț estimat BTC ($)</label>
+                <label class="text-sm font-medium">Estimated BTC Price ($)</label>
                 <input type="number" id="pred-price" value="68000" class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 text-white font-bold">
                 <button onclick="placePrediction()" class="w-full bg-emerald-500 hover:bg-emerald-600 text-darker font-bold py-3 rounded-xl transition">
-                    Plasează Predicția (Cost: 10 Tokeni)
+                    Place Prediction (Cost: 10 Tokens)
                 </button>
             </div>
         </div>
 
-        <!-- My Predictions Page -->
-        <div id="page-mypredictions" class="page-view hidden space-y-6">
-            <h1 class="text-3xl font-black">Predicțiile Mele & Link Referral</h1>
+        <!-- My Predictions & Referral Page -->
+        <div id="page-mypredictions" class="page-view hidden space-y-8">
+            <div class="border-b border-gray-800 pb-6">
+                <h1 class="text-3xl font-black">My Predictions & Referral Program</h1>
+                <p class="text-gray-400 text-sm">Track your active bets and invite friends to earn token bonuses.</p>
+            </div>
+
+            <!-- Referral Card -->
             <div class="bg-darkcard border border-gray-800 rounded-3xl p-6 space-y-4">
-                <h3 class="font-bold text-lg">Link-ul tău de Invitație (Referral)</h3>
-                <p class="text-xs text-gray-400">Primești 100 tokeni bonus când un prieten invitat plasează prima predicție.</p>
+                <h3 class="font-bold text-lg flex items-center space-x-2">
+                    <i class="fa-solid fa-users text-emerald-400"></i>
+                    <span>Your Unique Referral Link</span>
+                </h3>
+                <p class="text-xs text-gray-400">Earn 100 Predikto bonus tokens when your invited friend places their first prediction.</p>
                 <div class="flex space-x-2">
-                    <input type="text" id="referral-link" readonly class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-2 text-sm text-gray-300" value="https://predikto.app/?ref=autentificare">
-                    <button onclick="copyRefLink()" class="bg-emerald-500 text-darker font-bold px-4 rounded-xl text-sm">Copiază</button>
+                    <input type="text" id="referral-link" readonly class="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-2 text-sm text-gray-300 font-mono" value="Sign in to generate link">
+                    <button onclick="copyRefLink()" class="bg-emerald-500 hover:bg-emerald-600 text-darker font-bold px-5 rounded-xl text-sm transition">Copy</button>
+                </div>
+            </div>
+
+            <!-- Predictions Table -->
+            <div class="bg-darkcard border border-gray-800 rounded-3xl overflow-hidden shadow-xl">
+                <div class="p-6 border-b border-gray-800">
+                    <h3 class="font-bold text-lg">Prediction History</h3>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm">
+                        <thead class="bg-gray-900/80 text-gray-400 border-b border-gray-800 uppercase text-xs tracking-wider">
+                            <tr>
+                                <th class="p-4">Draw ID</th>
+                                <th class="p-4">Asset</th>
+                                <th class="p-4">Predicted Price</th>
+                                <th class="p-4">Stake</th>
+                                <th class="p-4">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="my-predictions-tbody" class="divide-y divide-gray-800 text-gray-300">
+                            <tr><td colspan="5" class="p-6 text-center text-gray-500">Please sign in to view your predictions.</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
 
         <!-- Leaderboard Page -->
         <div id="page-leaderboard" class="page-view hidden space-y-6">
-            <h1 class="text-3xl font-black">Clasament General</h1>
+            <h1 class="text-3xl font-black">Global Leaderboard</h1>
             <div class="bg-darkcard border border-gray-800 rounded-3xl p-6 text-gray-400">
-                Clasamentul utilizatorilor se actualizează în timp real din baza de date Firebase.
+                Top predictors ranking based on accurate closes and total token winnings.
             </div>
         </div>
     </main>
 
-    <!-- JavaScript Application & Firebase Integration Logic -->
+    <!-- Footer -->
+    <footer class="border-t border-gray-800 bg-darkcard py-8 mt-16">
+        <div class="max-w-7xl mx-auto px-4 flex flex-col md:flex-row items-center justify-between text-xs text-gray-500 space-y-4 md:space-y-0">
+            <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-bolt text-emerald-400"></i>
+                <span class="font-bold text-gray-300">PREDIKTO Protocol</span>
+                <span>&copy; 2026. All rights reserved.</span>
+            </div>
+            <div class="flex space-x-6">
+                <button onclick="router('home')" class="hover:text-gray-300 transition">Home</button>
+                <button onclick="router('draw')" class="hover:text-gray-300 transition">Predictions</button>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Frontend UI Scripts -->
     <script>
         function router(pageId) {
             document.querySelectorAll('.page-view').forEach(el => el.classList.add('hidden'));
             document.getElementById(`page-${pageId}`).classList.remove('hidden');
+            
+            document.querySelectorAll('.nav-link').forEach(el => {
+                el.classList.remove('text-accent');
+                el.classList.add('text-gray-300');
+                if(el.dataset.page === pageId) {
+                    el.classList.add('text-accent');
+                    el.classList.remove('text-gray-300');
+                }
+            });
             window.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
-        // Live BTC Price from Public API (Chainlink / Binance feeder)
+        // Live BTC Price Feeder via Binance API
         async function fetchBtcPrice() {
             try {
                 const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
@@ -168,19 +369,11 @@
         setInterval(fetchBtcPrice, 10000);
         fetchBtcPrice();
 
-        function loginWithGoogle() {
-            alert("Conectează fișierul la propria consolă Firebase adăugând cheile în secțiunea de sus a codului.");
-        }
-
         function copyRefLink() {
             const copyText = document.getElementById("referral-link");
             copyText.select();
             navigator.clipboard.writeText(copyText.value);
-            alert("Link de referral copiat în clipboard!");
-        }
-
-        function placePrediction() {
-            alert("Predicție plasată cu succes în baza de date!");
+            alert("Referral link copied to clipboard!");
         }
     </script>
 </body>
